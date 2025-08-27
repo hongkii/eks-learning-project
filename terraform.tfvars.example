@@ -1,0 +1,41 @@
+# terraform.tfvars 예시 파일
+# 이 파일을 terraform.tfvars로 복사해서 값들을 수정하세요
+
+# 기본 설정
+aws_region  = "ap-northeast-2"
+environment = "dev"
+
+# EKS 클러스터 설정 
+cluster_name       = "my-study-eks"
+kubernetes_version = "1.33"
+
+# 네트워크 설정
+vpc_cidr = "10.0.0.0/16"
+
+# SSH 접근용 EC2 키 페어 (빈 문자열로 설정할 경우 SSH 접근 비활성화)
+ec2_key_pair_name = ""
+
+# 노드 그룹 설정
+node_group_min_size     = 1
+node_group_desired_size = 1
+node_group_max_size     = 3
+instance_types          = ["t3.small"]
+disk_size               = 20
+capacity_type           = "SPOT"
+
+# 클러스터 엔드포인트 접근
+endpoint_private_access = true
+endpoint_public_access  = true
+public_access_cidrs     = ["0.0.0.0/0"]
+
+# 로그 보존
+log_retention_days = 7
+
+
+# 추가 태그 (선택사항)
+additional_tags = {
+  Owner       = "YourName"
+  Team        = "Study-Group"
+  CostCenter  = "Learning"
+  AutoDelete  = "true"
+}

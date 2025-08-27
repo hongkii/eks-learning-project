@@ -7,12 +7,9 @@
 - [아키텍처 개요](#아키텍처-개요)
 - [사전 요구사항](#사전-요구사항)
 - [빠른 시작](#빠른-시작)
-- [파일 구조](#파일-구조)
 - [상세 설명](#상세-설명)
 - [배포 후 확인](#배포-후-확인)
 - [클린업 (리소스 삭제)](#클린업-리소스-삭제)
-- [비용 관리](#비용-관리)
-- [문제 해결](#문제-해결)
 
 ## 아키텍처 개요
 
@@ -114,7 +111,7 @@ cp terraform.tfvars.example terraform.tfvars
 ```hcl
 # 필수 수정 항목
 cluster_name      = "your-study-cluster"    # 원하는 클러스터 이름
-ec2_key_pair_name = "your-key-pair-name"    # SSH 키 페어 이름 (선택사항)
+ec2_key_pair_name = ""                      # SSH 키 페어 이름 (빈 문자열 = SSH 비활성화)
 
 # 선택적 수정 항목
 aws_region        = "ap-northeast-2"        # 원하는 AWS 리전
@@ -148,29 +145,6 @@ kubectl get pods --all-namespaces
 
 > **참고**: Makefile을 사용하면 `make deploy` 명령 시 자동으로 kubectl 설정이 완료됩니다.
 
-## 파일 구조
-
-```
-eks-terraform/
-├── terraform/               # Terraform 구성 파일들
-│   ├── versions.tf          # 프로바이더 및 버전 설정
-│   ├── variables.tf         # 입력 변수 정의
-│   ├── outputs.tf           # 출력 변수 정의
-│   ├── vpc.tf               # VPC 및 네트워킹
-│   ├── security-groups.tf   # 보안 그룹
-│   ├── iam.tf               # IAM 역할 및 정책
-│   ├── eks.tf               # EKS 클러스터
-│   ├── node-group.tf        # EKS 노드 그룹
-│   ├── .terraform-version   # Terraform 버전 고정
-│   └── terraform.tfvars.example  # 변수 예시
-├── scripts/                 # 유틸리티 스크립트
-│   ├── validate-deployment.sh   # 배포 검증
-│   └── cost-calculator.sh       # 비용 계산기
-├── terraform.tfvars.example # 변수 예시 파일
-├── Makefile                 # 자동화 도구
-├── LICENSE                  # MIT 라이선스
-└── README.md               # 기본 문서
-```
 
 ## 상세 설명
 
@@ -283,70 +257,6 @@ aws elb describe-load-balancers
 aws ec2 describe-security-groups --filters "Name=group-name,Values=*eks*"
 ```
 
-## 비용 관리
-
-### 비용 절약 팁
-
-1. **스터디 후 즉시 삭제**: `make destroy` 또는 `terraform destroy`
-2. **스팟 인스턴스 사용**: `capacity_type = "SPOT"`
-3. **더 작은 인스턴스**: `instance_types = ["t3.small"]`
-4. **단일 AZ 사용**: NAT Gateway 1개만 사용하여 비용 절반
-
-## 문제 해결
-
-### 자주 발생하는 문제들
-
-#### 1. 키 페어 오류
-
-```
-Error: InvalidKeyPair.NotFound
-```
-
-**해결**: `ec2_key_pair_name = ""`로 설정하면 SSH 키 없이도 배포 가능
-
-#### 2. 권한 부족
-
-```
-Error: AccessDenied
-```
-
-**해결**: AWS 계정에 필요한 IAM 권한 확인:
-
-- EKS 클러스터 생성/관리
-- EC2 인스턴스 생성/관리
-- VPC 생성/관리
-- IAM 역할 생성/관리
-
-#### 3. AL2023 AMI 관련 문제
-
-```bash
-# 지원되는 AMI 타입 확인
-aws eks describe-addon-versions --addon-name vpc-cni --kubernetes-version 1.33
-
-# 노드 그룹 상태 확인
-aws eks describe-nodegroup --cluster-name your-cluster-name --nodegroup-name your-nodegroup-name
-```
-
-#### 4. kubectl 연결 실패
-
-```bash
-# kubeconfig 재설정
-aws eks update-kubeconfig --region ap-northeast-2 --name your-cluster-name --debug
-
-# AWS 자격 증명 확인
-aws sts get-caller-identity
-```
-
-### 로그 및 모니터링
-
-```bash
-# EKS 클러스터 로그 확인
-aws logs describe-log-groups --log-group-name-prefix /aws/eks/your-cluster-name
-
-# 노드 상태 디버깅
-kubectl describe nodes
-kubectl get events --all-namespaces --sort-by='.metadata.creationTimestamp'
-```
 
 ## 학습 리소스
 
