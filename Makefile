@@ -15,8 +15,8 @@
 
 # 기본 변수
 CLUSTER_NAME ?= my-study-eks
-AWS_REGION ?= ap-northeast-2
-TFVARS_FILE = terraform.tfvars
+AWS_REGION ?= ap-northeast-1
+TFVARS_FILE = terraform/terraform.tfvars
 
 # 색상 코드
 RED = \033[0;31m
@@ -62,9 +62,9 @@ setup: check-tools check-aws ## 초기 설정 (terraform.tfvars 파일 생성)
 		echo "${YELLOW}terraform.tfvars 파일이 없습니다. 생성 중...${NC}"; \
 		cp terraform.tfvars.example $(TFVARS_FILE); \
 		echo "${GREEN}✓ terraform.tfvars 파일이 생성되었습니다${NC}"; \
-		echo "${YELLOW}⚠️  terraform.tfvars 파일을 편집하여 실제 값을 입력하세요${NC}"; \
+		echo "${YELLOW}⚠️  terraform/terraform.tfvars 파일을 편집하여 실제 값을 입력하세요${NC}"; \
 		echo "   - cluster_name: 클러스터 이름"; \
-		echo "   - ec2_key_pair_name: 키 페어 이름 (선택사항)"; \
+		echo "   - ec2_key_pair_name: 키 페어 이름 (빈 문자열로 설정하면 SSH 비활성화)"; \
 	else \
 		echo "${GREEN}✓ terraform.tfvars 파일이 이미 존재합니다${NC}"; \
 	fi
@@ -78,28 +78,21 @@ validate: ## Terraform 설정 파일 유효성 검사
 	@echo "${GREEN}✓ 설정 파일이 유효합니다${NC}"
 
 plan: setup validate ## Terraform 실행 계획 확인
-	@echo "${BLUE}Terraform 실행 계획을 생성합니다...${NC}"
-	@cd terraform && terraform plan -var-file=../$(TFVARS_FILE) -out=tfplan
-	@echo "${GREEN}✓ 실행 계획이 생성되었습니다${NC}"
+	@echo "${BLUE}Terraform 실행 계획을 확인합니다...${NC}"
+	@cd terraform && terraform plan
+	@echo "${GREEN}✓ 실행 계획 확인이 완료되었습니다${NC}"
 	@echo "${YELLOW}계획을 검토한 후 'make deploy' 명령으로 배포하세요${NC}"
 
 deploy: ## EKS 클러스터 배포 (약 10-15분 소요)
 	@echo "${BLUE}EKS 클러스터 배포를 시작합니다... (10-15분 소요)${NC}"
-	@if [ ! -f tfplan ]; then \
-		echo "${YELLOW}실행 계획이 없습니다. 계획을 먼저 생성합니다...${NC}"; \
-		$(MAKE) plan; \
-	fi
-	@echo "${YELLOW}정말로 리소스를 생성하시겠습니까? 예상 비용: 월 200-250 달러${NC}"
-	@echo "${RED}계속하려면 'yes'를 입력하세요:${NC}"
-	@read confirm && [ "$$confirm" = "yes" ] || { echo "배포가 취소되었습니다"; exit 1; }
-	@cd terraform && terraform apply tfplan
+	@cd terraform && terraform apply --parallelism=30 -auto-approve
 	@echo "${GREEN}✓ EKS 클러스터 배포가 완료되었습니다${NC}"
 	@$(MAKE) kubeconfig
 
 kubeconfig: ## kubectl 설정 업데이트
 	@echo "${BLUE}kubectl 설정을 업데이트합니다...${NC}"
 	@CLUSTER_NAME=$$(cd terraform && terraform output -raw cluster_name 2>/dev/null || echo "$(CLUSTER_NAME)"); \
-	AWS_REGION=$$(cd terraform && terraform output -raw aws_region 2>/dev/null || echo "$(AWS_REGION)"); \
+	AWS_REGION=$$(cd terraform && terraform output -raw cluster_region 2>/dev/null || echo "$(AWS_REGION)"); \
 	aws eks update-kubeconfig --region $$AWS_REGION --name $$CLUSTER_NAME
 	@echo "${GREEN}✓ kubectl 설정이 업데이트되었습니다${NC}"
 
@@ -131,20 +124,21 @@ clean-test-app: ## 테스트 애플리케이션 삭제
 	@echo "${GREEN}✓ 테스트 애플리케이션이 삭제되었습니다${NC}"
 
 destroy: clean-test-app ## 모든 리소스 삭제
-	@echo "${RED}⚠️  모든 AWS 리소스를 삭제합니다!${NC}"
-	@echo "${YELLOW}정말로 삭제하시겠습니까? 'DELETE'를 입력하세요:${NC}"
-	@read confirm && [ "$$confirm" = "DELETE" ] || { echo "삭제가 취소되었습니다"; exit 1; }
+	@echo "${RED}⚠️ 모든 AWS 리소스를 삭제합니다!${NC}"
 	@echo "${BLUE}LoadBalancer 서비스 확인 및 삭제 중...${NC}"
 	@kubectl get services --all-namespaces -o json | jq -r '.items[] | select(.spec.type=="LoadBalancer") | "\(.metadata.namespace) \(.metadata.name)"' | while read ns name; do kubectl delete service $$name -n $$ns 2>/dev/null || true; done
 	@echo "${BLUE}PersistentVolume 삭제 중...${NC}"
 	@kubectl delete pv --all 2>/dev/null || true
 	@echo "${BLUE}Terraform으로 인프라 삭제 중... (10-15분 소요)${NC}"
-	@cd terraform && terraform destroy -var-file=../$(TFVARS_FILE) -auto-approve
+	@cd terraform && terraform destroy --parallelism=30 -auto-approve
+	@echo "${BLUE}kubeconfig에서 클러스터 정보 정리 중...${NC}"
+	@echo "클러스터 이름: $(CLUSTER_NAME)"; \
+	kubectl config get-contexts -o name | grep $(CLUSTER_NAME) | xargs -r kubectl config delete-context 2>/dev/null || true; \
+	kubectl config get-clusters | grep $(CLUSTER_NAME) | awk '{print $$1}' | xargs -r kubectl config delete-cluster 2>/dev/null || true
 	@echo "${GREEN}✓ 모든 리소스가 삭제되었습니다${NC}"
 
 clean: ## 임시 파일 정리
 	@echo "${BLUE}임시 파일을 정리합니다...${NC}"
-	@rm -f terraform/tfplan
 	@rm -f terraform/terraform.tfstate.backup
 	@rm -f terraform/.terraform.lock.hcl
 	@echo "${GREEN}✓ 임시 파일이 정리되었습니다${NC}"
