@@ -1,6 +1,11 @@
 # 주요 클러스터 정보 출력
 
 # EKS 클러스터 정보
+output "cluster_name" {
+  description = "EKS 클러스터 이름"
+  value       = var.cluster_name
+}
+
 output "cluster_id" {
   description = "EKS 클러스터 ID"
   value       = aws_eks_cluster.main.id

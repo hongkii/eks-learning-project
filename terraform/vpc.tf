@@ -12,13 +12,13 @@
 # AZ 목록을 직접 지정 (SCP 제한 우회)
 locals {
   availability_zones = {
-    "ap-northeast-2" = ["ap-northeast-2a", "ap-northeast-2c"]
+    "ap-northeast-1" = ["ap-northeast-1a", "ap-northeast-1c"]
     "us-east-1"      = ["us-east-1a", "us-east-1b"]
     "us-west-2"      = ["us-west-2a", "us-west-2b"]
   }
-  # 단일 AZ 모드일 때는 첫 번째 AZ만 사용
-  current_azs = var.single_az_mode ? [local.availability_zones[var.aws_region][0]] : local.availability_zones[var.aws_region]
-  az_count    = var.single_az_mode ? 1 : 2
+  # 항상 2개의 AZ를 사용 (최소 요구사항)
+  current_azs = local.availability_zones[var.aws_region]
+  az_count    = 2
 }
 
 # EKS 클러스터와 노드 그룹이 사용할 격리된 VPC
