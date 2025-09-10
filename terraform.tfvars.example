@@ -16,8 +16,8 @@ vpc_cidr = "10.0.0.0/16"
 ec2_key_pair_name = ""
 
 # 노드 그룹 설정
-node_group_min_size     = 1
-node_group_desired_size = 1
+node_group_min_size     = 2
+node_group_desired_size = 2
 node_group_max_size     = 3
 instance_types          = ["t3.small"]
 disk_size               = 20
@@ -30,7 +30,6 @@ public_access_cidrs     = ["0.0.0.0/0"]
 
 # 로그 보존
 log_retention_days = 7
-
 
 # 추가 태그 (선택사항)
 additional_tags = {
