@@ -38,18 +38,18 @@ variable "ec2_key_pair_name" {
 variable "node_group_min_size" {
   description = "오토 스케일링 그룹의 최소 노드 수"
   type        = number
-  default     = 1
+  default     = 2
 
   validation {
-    condition     = var.node_group_min_size >= 1
-    error_message = "노드 그룹 최소 크기는 1 이상이어야 합니다."
+    condition     = var.node_group_min_size >= 2
+    error_message = "노드 그룹 최소 크기는 2 이상이어야 합니다."
   }
 }
 
 variable "node_group_desired_size" {
   description = "오토 스케일링 그룹의 희망 노드 수"
   type        = number
-  default     = 1
+  default     = 2
 
   validation {
     condition     = var.node_group_desired_size >= var.node_group_min_size
