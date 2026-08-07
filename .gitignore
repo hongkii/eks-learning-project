@@ -59,7 +59,7 @@ Thumbs.db
 .fuse_hidden*
 .nfs*
 
-# Claude Code 작업 규칙 (로컬 전용)
+# Claude Code working rules (local only)
 CLAUDE.md
 .claude/
 .mcp.json

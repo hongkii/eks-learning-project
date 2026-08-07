@@ -1,5 +1,5 @@
-# 버전 롤백 중 파드가 계속 동작하는지 확인하기 위한 데모 앱
-# 파드가 어느 노드에서 도는지 화면에 표시한다.
+# Demo app used to check that pods keep serving during a version rollback.
+# Each pod renders its own name and the node it runs on.
 ---
 apiVersion: apps/v1
 kind: Deployment
@@ -18,7 +18,7 @@ spec:
       labels:
         app: demo-app
     spec:
-      # 노드 롤링 중 두 파드가 같은 노드에 몰리지 않게 한다.
+      # Keeps both pods off the same node while nodes are rolling.
       topologySpreadConstraints:
         - maxSkew: 1
           topologyKey: kubernetes.io/hostname
@@ -32,7 +32,7 @@ spec:
           ports:
             - containerPort: 80
           env:
-            # Downward API로 파드와 노드 이름을 가져온다.
+            # Pod and node names come from the Downward API.
             # https://kubernetes.io/docs/tasks/inject-data-application/environment-variable-expose-pod-information/
             - name: POD_NAME
               valueFrom:
@@ -76,7 +76,7 @@ metadata:
   name: demo-app
   namespace: default
 spec:
-  # LoadBalancer는 과금되므로 ClusterIP로 두고 port-forward로 접근한다.
+  # ClusterIP avoids the LoadBalancer charge. Reach it through port-forward.
   type: ClusterIP
   selector:
     app: demo-app
@@ -84,7 +84,7 @@ spec:
     - port: 80
       targetPort: 80
 ---
-# 노드 롤링 중 최소 1개는 남게 한다.
+# Keeps at least one pod available while nodes are rolling.
 # https://kubernetes.io/docs/tasks/run-application/configure-pdb/
 apiVersion: policy/v1
 kind: PodDisruptionBudget

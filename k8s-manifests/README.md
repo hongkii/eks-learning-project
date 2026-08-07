@@ -1,25 +1,25 @@
-# Kubernetes 매니페스트
+# Kubernetes Manifests
 
 ## demo-app.yaml
 
-파드가 어느 노드에서 도는지 화면에 표시하는 데모 앱이다.
-버전 롤백이나 노드 교체 중 파드가 계속 동작하는지 확인할 때 쓴다.
+A demo app that displays which node each pod runs on.
+Used to check that pods keep serving during a version rollback or node replacement.
 
 ```bash
-make test-app     # 배포
-make app-status   # 파드와 노드 확인
+make test-app     # deploy
+make app-status   # check pods and nodes
 make app-open     # http://localhost:8080
-make app-watch    # 파드 상태 실시간 관찰
+make app-watch    # watch pod status live
 ```
 
-Service 는 ClusterIP 다. LoadBalancer 는 과금되므로 port-forward 로 접근한다.
+The Service is ClusterIP. LoadBalancer costs money, so access it through port-forward.
 
-## EBS 볼륨 예제
+## EBS Volume Example
 
-`storageclass.yaml`, `pvc.yaml`, `example-pod.yaml` 로 EBS 동적 프로비저닝을 확인한다.
+`storageclass.yaml`, `pvc.yaml` and `example-pod.yaml` demonstrate EBS dynamic provisioning.
 
-EBS CSI Driver 는 Terraform 이 EKS 애드온으로 설치하므로 별도 설치가 필요 없다.
-IRSA 역할도 `terraform/iam.tf` 에서 만들어진다.
+The EBS CSI Driver is installed by Terraform as an EKS add-on, so no separate install is needed.
+The IRSA role is created in `terraform/iam.tf` as well.
 
 ```bash
 kubectl apply -f storageclass.yaml
@@ -30,17 +30,18 @@ kubectl get pvc ebs-pvc
 kubectl get pv
 ```
 
-PVC 가 `Bound` 가 되지 않으면 IRSA 설정을 확인한다.
+If the PVC does not reach `Bound`, check the IRSA setup.
 
 ```bash
 kubectl -n kube-system logs deploy/ebs-csi-controller -c csi-provisioner
 ```
 
-## 삭제
+## Cleanup
 
 ```bash
 kubectl delete -f example-pod.yaml -f pvc.yaml -f storageclass.yaml
 make clean-test-app
 ```
 
-PV 가 남으면 EBS 볼륨이 삭제되지 않아 과금이 이어진다. `make destroy` 가 정리한다.
+A leftover PV keeps its EBS volume alive and billing. `make destroy` deletes PVs before
+running terraform destroy.

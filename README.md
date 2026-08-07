@@ -86,7 +86,11 @@ align `kubernetes_version` in the code with the actual version.
 make destroy
 ```
 
-Clean up LoadBalancer services and PVs first, then run terraform destroy.
+The target removes LoadBalancer services and PersistentVolumes first, then runs terraform destroy.
+Both leave AWS resources behind if terraform destroy runs on its own.
+
+The KMS key is not deleted immediately. It enters a 7 day pending deletion window, which is the
+minimum AWS allows, and is billed until it is gone.
 
 ## Cost
 
