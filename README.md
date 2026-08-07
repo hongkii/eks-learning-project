@@ -1,275 +1,120 @@
 # EKS Terraform 스터디 프로젝트
 
-이 프로젝트는 Kubernetes 학습을 위한 AWS EKS 클러스터를 Terraform으로 구축하는 예제입니다. AWS EKS 공식 문서와 베스트 프랙티스를 기반으로 작성되었으며, 학습 목적으로 최적화되어 있습니다.
+Kubernetes 학습용 EKS 클러스터를 Terraform으로 구축한다. 현재는 **EKS 버전 롤백 검증**에 사용한다.
 
-## 목차
-
-- [아키텍처 개요](#아키텍처-개요)
-- [사전 요구사항](#사전-요구사항)
-- [빠른 시작](#빠른-시작)
-- [상세 설명](#상세-설명)
-- [배포 후 확인](#배포-후-확인)
-- [클린업 (리소스 삭제)](#클린업-리소스-삭제)
-
-## 아키텍처 개요
-
-이 Terraform 구성은 다음과 같은 AWS 리소스를 생성합니다:
+## 구성
 
 ```
-┌─────────────────────────────────────────────────────────┐
-│                        VPC (10.0.0.0/16)                │
-├─────────────────────┬───────────────────────────────────┤
-│   Public Subnet 1   │         Public Subnet 2          │
-│   (10.0.0.0/24)     │         (10.0.1.0/24)           │
-│  - Internet Gateway │       - Internet Gateway         │
-│  - NAT Gateway 1    │       - NAT Gateway 2            │
-├─────────────────────┼───────────────────────────────────┤
-│  Private Subnet 1   │        Private Subnet 2          │
-│   (10.0.10.0/24)    │        (10.0.11.0/24)           │
-│  - EKS Worker Nodes │      - EKS Worker Nodes          │
-│  - EKS Control Plane│      - EKS Control Plane         │
-└─────────────────────┴───────────────────────────────────┘
+VPC (10.0.0.0/16)
+├── Public Subnet  x2   IGW, NAT Gateway
+└── Private Subnet x2   EKS 컨트롤 플레인 ENI, 워커 노드
 ```
 
-### 주요 구성 요소
+| 항목 | 값 |
+| --- | --- |
+| Kubernetes | 1.34 (standard support) |
+| AMI | AL2023_x86_64_STANDARD |
+| 인스턴스 | t3.small SPOT x2 |
+| 애드온 | vpc-cni, kube-proxy, coredns, aws-ebs-csi-driver |
+| 암호화 | KMS (etcd secrets), EBS gp3 |
+| 메타데이터 | IMDSv2 필수 (`http_tokens = required`) |
 
-- **VPC**: Multi-AZ 고가용성 네트워크
-- **EKS 1.33**: 사이드카 컨테이너 stable 지원, Dynamic Resource Allocation
-- **Amazon Linux 2023**: AL2 지원 종료로 AL2023 AMI 사용
-- **Enhanced CNI**: 네트워크 성능 최적화
-- **EBS CSI v2**: 영구 볼륨 관리
-- **KMS 암호화**: etcd 및 시크릿 암호화
+NAT Gateway는 기본 1개다. AZ 장애 격리가 필요하면 `single_nat_gateway = false` 로 바꾼다.
 
 ## 사전 요구사항
 
-**중요**: 배포하기 전에 필수 도구를 설치하세요.
+```bash
+terraform version   # >= 1.13
+aws --version       # >= 2.12.3
+kubectl version --client
 
-### 빠른 확인
+export AWS_PROFILE=cm-yim.hongki
+aws sts get-caller-identity
+```
+
+## 배포
 
 ```bash
-# 프로젝트 디렉토리로 이동
-cd eks-terraform
-
-# 필수 도구 버전 확인
-terraform version    # v1.13.0 (프로젝트 지정 버전)
-aws --version       # >= 2.12.3 필요
-kubectl version --client  # >= 1.32 권장
-aws sts get-caller-identity  # AWS 계정 확인
+make setup     # terraform init
+make plan      # 실행 계획 확인
+make deploy    # 배포. plan 을 보여주고 yes 확인을 받는다
+make status    # 노드와 시스템 파드 확인
 ```
 
-**특징**: 이 프로젝트는 `.terraform-version` 파일로 `tfenv`와 호환됩니다.
+설정은 `terraform/terraform.tfvars` 에서 바꾼다. 이 파일은 gitignore 대상이다.
 
-필수 도구:
+## 데모 앱
 
-- Terraform >= 1.9
-- AWS CLI >= 2.12.3
-- kubectl >= 1.32
-
-## 빠른 시작
-
-### 방법 A: Makefile 사용 (권장)
+파드가 어느 노드에서 도는지 화면에 표시한다. 노드 교체나 롤백 중 동작을 확인할 때 쓴다.
 
 ```bash
-git clone https://github.com/your-username/eks-terraform
-cd eks-terraform
-
-# 1. 도움말 확인
-make help
-
-# 2. 자동 배포 (권장)
-make all          # setup + plan + deploy + status 한 번에 실행
-
-# 또는 단계별 실행
-make setup        # 초기 설정 및 terraform.tfvars 생성
-make plan         # 실행 계획 확인
-make deploy       # 클러스터 배포 (10-15분)
-make status       # 상태 확인
-
-# 3. 테스트 앱 배포 (선택사항)
-make test-app     # nginx 테스트 애플리케이션
-
-# 4. 리소스 삭제
-make destroy      # 모든 AWS 리소스 삭제
+make test-app     # 배포 (ClusterIP, 과금 없음)
+make app-status   # 파드와 노드 확인
+make app-open     # http://localhost:8080 으로 연결
+make app-watch    # 롤백 중 파드 상태 실시간 관찰
 ```
 
-### 방법 B: 수동 Terraform 실행
+## 버전 롤백 검증
 
-#### 1. 프로젝트 클론 및 설정
+EKS는 in-place 업그레이드 후 7일 이내에 한 단계 이전 마이너 버전으로 되돌릴 수 있다.
+생성 당시 버전으로는 되돌릴 수 없으므로 1.34로 만들고 1.35로 올린 뒤 되돌린다.
+
+<https://docs.aws.amazon.com/eks/latest/userguide/rollback-cluster.html>
 
 ```bash
-git clone https://github.com/your-username/eks-terraform
-cd eks-terraform
-
-# 변수 파일 생성
-cp terraform.tfvars.example terraform.tfvars
+make versions                            # 버전별 지원 상태 확인
+# terraform.tfvars 의 kubernetes_version 을 1.35 로 변경
+make deploy                              # 1.34 → 1.35
+make insights                            # ROLLBACK_READINESS 확인
+make rollback-nodegroup VERSION=1.34     # 노드 그룹 먼저
+make rollback-cluster VERSION=1.34       # 컨트롤 플레인
+make updates                             # type 이 VersionRollback 인지 확인
+make drift                               # Terraform 과의 차이 확인
 ```
 
-#### 2. 변수 파일 수정
+관리형 노드 그룹은 자동으로 롤백되지 않는다. 컨트롤 플레인보다 먼저 되돌려야 한다.
+애드온도 자동으로 되돌아가지 않으므로 별도로 관리한다.
 
-`terraform.tfvars` 파일을 열어 다음 값들을 수정하세요:
+Terraform AWS Provider는 아직 롤백을 지원하지 않는다. CLI로 되돌린 뒤 코드의
+`kubernetes_version` 을 실제 버전에 맞춰야 한다.
 
-```hcl
-# 필수 수정 항목
-cluster_name      = "your-study-cluster"    # 원하는 클러스터 이름
-ec2_key_pair_name = ""                      # SSH 키 페어 이름 (빈 문자열 = SSH 비활성화)
+- <https://github.com/hashicorp/terraform-provider-aws/issues/48751>
 
-# 선택적 수정 항목
-aws_region        = "ap-northeast-2"        # 원하는 AWS 리전
-environment       = "dev"                   # 환경 구분
-```
-
-#### 3. Terraform 실행
+## 삭제
 
 ```bash
-# Terraform 초기화
-cd terraform
-terraform init
-
-# 실행 계획 확인
-terraform plan -var-file=../terraform.tfvars
-
-# 리소스 생성 (약 10-15분 소요)
-terraform apply
+make destroy
 ```
 
-#### 4. kubectl 설정 (수동 방식)
+LoadBalancer 서비스와 PV를 먼저 정리한 뒤 Terraform destroy를 실행한다.
+
+## 비용
 
 ```bash
-# kubeconfig 업데이트
-aws eks update-kubeconfig --region ap-northeast-2 --name your-study-cluster
-
-# 클러스터 연결 확인
-kubectl get nodes
-kubectl get pods --all-namespaces
+make cost-note
 ```
 
-> **참고**: Makefile을 사용하면 `make deploy` 명령 시 자동으로 kubectl 설정이 완료됩니다.
+EKS 컨트롤 플레인 $0.10/h, NAT Gateway $0.045/h, t3.small SPOT x2 약 $0.014/h.
+합계 약 $0.16/h. 검증이 끝나면 반드시 삭제한다.
 
+## 파일 구성
 
-## 상세 설명
+| 파일 | 내용 |
+| --- | --- |
+| `terraform/vpc.tf` | VPC, 서브넷, NAT Gateway, 라우팅 |
+| `terraform/eks.tf` | 클러스터, KMS, CloudWatch 로그, 애드온 |
+| `terraform/node-group.tf` | Launch Template, 관리형 노드 그룹 |
+| `terraform/iam.tf` | 클러스터·노드 역할, IRSA, OIDC 프로바이더 |
+| `terraform/security-groups.tf` | 클러스터·노드·ALB 보안 그룹 |
+| `k8s-manifests/demo-app.yaml` | 데모 앱 (Deployment, Service, PDB) |
+| `k8s-manifests/` | EBS StorageClass, PVC 예제 |
 
-### VPC 및 네트워킹 (`vpc.tf`)
+## 참고
 
-- **고가용성**: 2개 가용 영역에 분산 배치
-- **보안**: 워커 노드는 프라이빗 서브넷에 배치
-- **확장성**: NAT 게이트웨이로 아웃바운드 연결 제공
-
-### 보안 설정 (`security-groups.tf`)
-
-- **최소 권한 원칙**: 필요한 포트만 개방
-- **계층적 보안**: 클러스터, 노드, ALB별 보안 그룹 분리
-- **SSH 접근**: VPC 내에서만 SSH 허용
-
-### IAM 권한 (`iam.tf`)
-
-- **EKS 클러스터 역할**: 컨트롤 플레인 관리 권한
-- **노드 그룹 역할**: 워커 노드 운영 권한
-- **OIDC 연동**: 쿠버네티스 서비스 어카운트와 IAM 역할 매핑
-
-### EKS 클러스터 (`eks.tf`)
-
-- **Kubernetes 1.33**: 사이드카 컨테이너, 토폴로지 인식 라우팅
-- **AL2023 AMI**: AL2 지원 종료로 마이그레이션
-- **Dynamic Resource Allocation**: GPU 등 특수 리소스 스케줄링
-- **Enhanced Security**: IMDSv2 강제, KMS 암호화
-
-### 노드 그룹 (`node-group.tf`)
-
-- **AL2023 AMI**: Kubernetes 1.33 지원
-- **Dynamic SSH**: 키 페어 없이도 배포 가능
-- **IMDSv2 강제**: 메타데이터 보안 강화
-- **Launch Template**: 고급 인스턴스 설정 지원
-
-## 배포 후 확인
-
-### 1. 클러스터 상태 확인
-
-```bash
-# 클러스터 정보 확인
-kubectl cluster-info
-
-# 노드 상태 확인
-kubectl get nodes -o wide
-
-# 시스템 파드 확인
-kubectl get pods -n kube-system
-```
-
-### 2. 샘플 애플리케이션 배포
-
-```bash
-# nginx 배포
-kubectl create deployment nginx --image=nginx
-kubectl expose deployment nginx --port=80 --type=LoadBalancer
-
-# 서비스 확인
-kubectl get services
-```
-
-### 3. AWS 콘솔에서 확인
-
-- EKS 클러스터: https://console.aws.amazon.com/eks/
-- EC2 인스턴스: https://console.aws.amazon.com/ec2/
-- VPC: https://console.aws.amazon.com/vpc/
-
-## 클린업 (리소스 삭제)
-
-**중요: 모든 쿠버네티스 리소스를 먼저 삭제해야 합니다!**
-
-### 1. LoadBalancer 서비스 삭제
-
-```bash
-# LoadBalancer 타입 서비스 확인
-kubectl get services --all-namespaces
-
-# LoadBalancer 서비스 삭제 (ELB 정리용)
-kubectl delete service nginx  # 예시
-```
-
-### 2. PersistentVolume 정리
-
-```bash
-# PV 확인 및 삭제
-kubectl get pv
-kubectl delete pv --all
-```
-
-### 3. Terraform으로 인프라 삭제
-
-```bash
-# 리소스 삭제 (약 10-15분 소요)
-cd terraform
-terraform destroy -var-file=../terraform.tfvars
-
-# 확인 메시지에서 'yes' 입력
-```
-
-### 4. 수동 정리 (필요시)
-
-일부 리소스가 남아있을 수 있습니다:
-
-```bash
-# ELB 확인 및 삭제
-aws elbv2 describe-load-balancers
-aws elb describe-load-balancers
-
-# Security Group 확인
-aws ec2 describe-security-groups --filters "Name=group-name,Values=*eks*"
-```
-
-
-## 학습 리소스
-
-- [AWS EKS 사용자 가이드](https://docs.aws.amazon.com/ko_kr/eks/latest/userguide/)
-- [AWS EKS 베스트 프랙티스](https://aws.github.io/aws-eks-best-practices/)
-- [Kubernetes 공식 문서](https://kubernetes.io/ko/docs/)
+- [EKS User Guide](https://docs.aws.amazon.com/eks/latest/userguide/)
+- [EKS Best Practices Guide](https://docs.aws.amazon.com/eks/latest/best-practices/)
 - [Terraform AWS Provider](https://registry.terraform.io/providers/hashicorp/aws/latest/docs)
-- [tfenv GitHub](https://github.com/tfutils/tfenv) - Terraform 버전 관리
-
-## 기여 및 피드백
-
-이 프로젝트는 학습 목적으로 만들어졌습니다. 개선사항이나 문제점을 발견하시면 이슈를 등록해 주세요.
 
 ---
 
-**주의사항**: 이 구성은 학습 목적으로 설계되었습니다. 운영 환경에서 사용하려면 보안 강화, 모니터링, 백업 전략 등을 추가로 구성해야 합니다.
+학습 목적 구성이다. 운영 환경에서는 보안, 모니터링, 백업을 추가로 구성해야 한다.
