@@ -6,12 +6,18 @@ metadata:
 spec:
   containers:
   - name: app
-    image: nginx:latest
+    image: nginx:1.29-alpine
     volumeMounts:
     - name: ebs-storage
       mountPath: /data
     ports:
     - containerPort: 80
+    resources:
+      requests:
+        cpu: 10m
+        memory: 16Mi
+      limits:
+        memory: 64Mi
   volumes:
   - name: ebs-storage
     persistentVolumeClaim:
