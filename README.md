@@ -1,27 +1,27 @@
-# EKS Terraform 스터디 프로젝트
+# EKS Terraform Study Project
 
-Kubernetes 학습용 EKS 클러스터를 Terraform으로 구축한다. 현재는 **EKS 버전 롤백 검증**에 사용한다.
+An EKS cluster built with Terraform for learning Kubernetes. Currently used to verify **EKS version rollback**.
 
-## 구성
+## Architecture
 
 ```
 VPC (10.0.0.0/16)
 ├── Public Subnet  x2   IGW, NAT Gateway
-└── Private Subnet x2   EKS 컨트롤 플레인 ENI, 워커 노드
+└── Private Subnet x2   EKS control plane ENIs, worker nodes
 ```
 
-| 항목 | 값 |
+| Item | Value |
 | --- | --- |
 | Kubernetes | 1.34 (standard support) |
 | AMI | AL2023_x86_64_STANDARD |
-| 인스턴스 | t3.small SPOT x2 |
-| 애드온 | vpc-cni, kube-proxy, coredns, aws-ebs-csi-driver |
-| 암호화 | KMS (etcd secrets), EBS gp3 |
-| 메타데이터 | IMDSv2 필수 (`http_tokens = required`) |
+| Instances | t3.small SPOT x2 |
+| Add-ons | vpc-cni, kube-proxy, coredns, aws-ebs-csi-driver |
+| Encryption | KMS (etcd secrets), EBS gp3 |
+| Metadata | IMDSv2 required (`http_tokens = required`) |
 
-NAT Gateway는 기본 1개다. AZ 장애 격리가 필요하면 `single_nat_gateway = false` 로 바꾼다.
+A single NAT Gateway is created by default. Set `single_nat_gateway = false` for per-AZ fault isolation.
 
-## 사전 요구사항
+## Prerequisites
 
 ```bash
 terraform version   # >= 1.13
@@ -32,84 +32,84 @@ export AWS_PROFILE=cm-yim.hongki
 aws sts get-caller-identity
 ```
 
-## 배포
+## Deploy
 
 ```bash
 make setup     # terraform init
-make plan      # 실행 계획 확인
-make deploy    # 배포. plan 을 보여주고 yes 확인을 받는다
-make status    # 노드와 시스템 파드 확인
+make plan      # review the execution plan
+make deploy    # deploy. Shows the plan and asks for a yes confirmation
+make status    # check nodes and system pods
 ```
 
-설정은 `terraform/terraform.tfvars` 에서 바꾼다. 이 파일은 gitignore 대상이다.
+Settings live in `terraform/terraform.tfvars`, which is gitignored.
 
-## 데모 앱
+## Demo App
 
-파드가 어느 노드에서 도는지 화면에 표시한다. 노드 교체나 롤백 중 동작을 확인할 때 쓴다.
+Displays which node each pod runs on. Useful for observing behavior during node replacement or rollback.
 
 ```bash
-make test-app     # 배포 (ClusterIP, 과금 없음)
-make app-status   # 파드와 노드 확인
-make app-open     # http://localhost:8080 으로 연결
-make app-watch    # 롤백 중 파드 상태 실시간 관찰
+make test-app     # deploy (ClusterIP, no extra charge)
+make app-status   # check pods and nodes
+make app-open     # forward to http://localhost:8080
+make app-watch    # watch pod status during a rollback
 ```
 
-## 버전 롤백 검증
+## Version Rollback Verification
 
-EKS는 in-place 업그레이드 후 7일 이내에 한 단계 이전 마이너 버전으로 되돌릴 수 있다.
-생성 당시 버전으로는 되돌릴 수 없으므로 1.34로 만들고 1.35로 올린 뒤 되돌린다.
+EKS allows rolling back to the previous minor version within 7 days of an in-place upgrade.
+A cluster cannot be rolled back to the version it was created at, so create at 1.34, upgrade to 1.35, then roll back.
 
 <https://docs.aws.amazon.com/eks/latest/userguide/rollback-cluster.html>
 
 ```bash
-make versions                            # 버전별 지원 상태 확인
-# terraform.tfvars 의 kubernetes_version 을 1.35 로 변경
-make deploy                              # 1.34 → 1.35
-make insights                            # ROLLBACK_READINESS 확인
-make rollback-nodegroup VERSION=1.34     # 노드 그룹 먼저
-make rollback-cluster VERSION=1.34       # 컨트롤 플레인
-make updates                             # type 이 VersionRollback 인지 확인
-make drift                               # Terraform 과의 차이 확인
+make versions                            # check support status per version
+# change kubernetes_version to 1.35 in terraform.tfvars
+make deploy                              # 1.34 to 1.35
+make insights                            # check ROLLBACK_READINESS
+make rollback-nodegroup VERSION=1.34     # node group first
+make rollback-cluster VERSION=1.34       # control plane
+make updates                             # confirm the type is VersionRollback
+make drift                               # check the difference against Terraform
 ```
 
-관리형 노드 그룹은 자동으로 롤백되지 않는다. 컨트롤 플레인보다 먼저 되돌려야 한다.
-애드온도 자동으로 되돌아가지 않으므로 별도로 관리한다.
+Managed node groups are not rolled back automatically. They must be rolled back before the control plane.
+Add-ons are not rolled back either, so they need to be handled separately.
 
-Terraform AWS Provider는 아직 롤백을 지원하지 않는다. CLI로 되돌린 뒤 코드의
-`kubernetes_version` 을 실제 버전에 맞춰야 한다.
+The Terraform AWS Provider does not support rollback yet. After rolling back with the CLI,
+align `kubernetes_version` in the code with the actual version.
 
 - <https://github.com/hashicorp/terraform-provider-aws/issues/48751>
 
-## 삭제
+## Destroy
 
 ```bash
 make destroy
 ```
 
-LoadBalancer 서비스와 PV를 먼저 정리한 뒤 Terraform destroy를 실행한다.
+Clean up LoadBalancer services and PVs first, then run terraform destroy.
 
-## 비용
+## Cost
 
 ```bash
 make cost-note
 ```
 
-EKS 컨트롤 플레인 $0.10/h, NAT Gateway $0.045/h, t3.small SPOT x2 약 $0.014/h.
-합계 약 $0.16/h. 검증이 끝나면 반드시 삭제한다.
+EKS control plane $0.10/h, NAT Gateway $0.045/h, t3.small SPOT x2 about $0.014/h.
+Roughly $0.16/h in total. Destroy the cluster once verification is done.
 
-## 파일 구성
+## Layout
 
-| 파일 | 내용 |
+| File | Contents |
 | --- | --- |
-| `terraform/vpc.tf` | VPC, 서브넷, NAT Gateway, 라우팅 |
-| `terraform/eks.tf` | 클러스터, KMS, CloudWatch 로그, 애드온 |
-| `terraform/node-group.tf` | Launch Template, 관리형 노드 그룹 |
-| `terraform/iam.tf` | 클러스터·노드 역할, IRSA, OIDC 프로바이더 |
-| `terraform/security-groups.tf` | 클러스터·노드·ALB 보안 그룹 |
-| `k8s-manifests/demo-app.yaml` | 데모 앱 (Deployment, Service, PDB) |
-| `k8s-manifests/` | EBS StorageClass, PVC 예제 |
+| `terraform/vpc.tf` | VPC, subnets, NAT Gateway, routing |
+| `terraform/eks.tf` | Cluster, KMS, CloudWatch logs, add-ons |
+| `terraform/node-group.tf` | Launch template, managed node group |
+| `terraform/iam.tf` | Cluster and node roles, IRSA, OIDC provider |
+| `terraform/security-groups.tf` | Cluster, node and ALB security groups |
+| `k8s-manifests/demo-app.yaml` | Demo app (Deployment, Service, PDB) |
+| `k8s-manifests/` | EBS StorageClass and PVC examples |
 
-## 참고
+## References
 
 - [EKS User Guide](https://docs.aws.amazon.com/eks/latest/userguide/)
 - [EKS Best Practices Guide](https://docs.aws.amazon.com/eks/latest/best-practices/)
@@ -117,4 +117,4 @@ EKS 컨트롤 플레인 $0.10/h, NAT Gateway $0.045/h, t3.small SPOT x2 약 $0.0
 
 ---
 
-학습 목적 구성이다. 운영 환경에서는 보안, 모니터링, 백업을 추가로 구성해야 한다.
+Built for learning. A production setup needs additional security, monitoring and backup.
