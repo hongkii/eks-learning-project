@@ -1,85 +1,38 @@
-# =============================================================================
-# EKS 노드 그룹 및 Launch Template 설정
-# =============================================================================
-# 이 파일은 EKS 워커 노드와 관련 설정을 정의합니다.
-# - EKS 노드 그룹 생성 (Amazon Linux 2023)
-# - 오토 스케일링 설정
-# - Launch Template (고급 설정)
-# - IMDSv2 보안 강화
-# - SSH 접근 설정 (동적)
-# =============================================================================
+# Launch template and EKS managed node group.
+#
+# When a launch template is attached, disk_size and remote_access cannot be set
+# on the node group. Both are moved into the launch template.
+# https://docs.aws.amazon.com/eks/latest/userguide/launch-templates.html
 
-# EKS 1.33 지원 워커 노드 그룹 - 베스트 프랙티스: 프라이빗 서브넷 배치
-resource "aws_eks_node_group" "main" {
-  cluster_name    = aws_eks_cluster.main.name # eks.tf 클러스터 참조
-  node_group_name = "${var.cluster_name}-node-group"
-  node_role_arn   = aws_iam_role.eks_node_group.arn # iam.tf 노드 그룹 IAM 역할
+# Without image_id, EKS injects the AMI for ami_type and the bootstrap user data.
+resource "aws_launch_template" "eks_nodes" {
+  name_prefix = "${var.cluster_name}-node-"
 
-  subnet_ids = aws_subnet.private[*].id # vpc.tf 프라이빗 서브넷 배치
+  vpc_security_group_ids = [aws_security_group.eks_nodes.id]
 
-  # AL2023 AMI - K8s 1.33에서 AL2 지원 종료로 필수 마이그레이션
-  ami_type = "AL2023_x86_64_STANDARD"
+  key_name = var.ec2_key_pair_name != "" ? var.ec2_key_pair_name : null
 
-  instance_types = var.instance_types # variables.tf 인스턴스 타입
-  disk_size      = var.disk_size      # variables.tf 디스크 크기
+  block_device_mappings {
+    device_name = "/dev/xvda"
 
-  scaling_config {
-    desired_size = var.node_group_desired_size
-    max_size     = var.node_group_max_size
-    min_size     = var.node_group_min_size
-  }
-
-  update_config {
-    max_unavailable_percentage = 25 # Rolling update 전략
-  }
-
-  capacity_type = var.capacity_type
-
-  dynamic "remote_access" {
-    for_each = var.ec2_key_pair_name != "" ? [1] : []
-    content {
-      ec2_ssh_key               = var.ec2_key_pair_name
-      source_security_group_ids = [aws_security_group.eks_nodes.id]
+    ebs {
+      volume_size           = var.disk_size
+      volume_type           = "gp3"
+      delete_on_termination = true
+      encrypted             = true
     }
   }
 
-  labels = {
-    role        = "worker"
-    environment = var.environment
-  }
-
-  # IAM 역할 정책이 모두 연결된 후 노드 그룹 생성
-  depends_on = [
-    aws_iam_role_policy_attachment.eks_worker_node_policy,        # iam.tf 노드 역할 정책
-    aws_iam_role_policy_attachment.eks_cni_policy,                # iam.tf CNI 정책 (ENI 관리)
-    aws_iam_role_policy_attachment.eks_container_registry_policy, # iam.tf ECR 접근 정책
-  ]
-
-  tags = {
-    Name                                        = "${var.cluster_name}-node-group"
-    "kubernetes.io/cluster/${var.cluster_name}" = "owned"
-  }
-
-  lifecycle {
-    ignore_changes = [scaling_config[0].desired_size] # ASG가 제어
-  }
-}
-
-# 선택적: 고급 노드 설정 (IMDSv2, 사용자 데이터 등)
-resource "aws_launch_template" "eks_nodes" {
-  name = "${var.cluster_name}-node-template"
-
-  vpc_security_group_ids = [aws_security_group.eks_nodes.id] # security-groups.tf 노드 SG
-
-  # EKS 1.33 베스트 프랙티스: IMDSv2 강제 사용
+  # hop limit sets the TTL of the IMDSv2 PUT response, not the request.
+  # https://docs.aws.amazon.com/AWSEC2/latest/UserGuide/configuring-instance-metadata-service.html
   metadata_options {
     http_endpoint               = "enabled"
-    http_tokens                 = "required" # IMDSv1 차단, 보안 강화
-    http_put_response_hop_limit = 2
+    http_tokens                 = "required"
+    http_put_response_hop_limit = var.imds_hop_limit
   }
 
   monitoring {
-    enabled = true # CloudWatch 메트릭 수집
+    enabled = false
   }
 
   tag_specifications {
@@ -91,5 +44,65 @@ resource "aws_launch_template" "eks_nodes" {
 
   tags = {
     Name = "${var.cluster_name}-node-template"
+  }
+
+  lifecycle {
+    create_before_destroy = true
+  }
+}
+
+resource "aws_eks_node_group" "main" {
+  cluster_name    = aws_eks_cluster.main.name
+  node_group_name = "${var.cluster_name}-node-group"
+  node_role_arn   = aws_iam_role.eks_node_group.arn
+
+  subnet_ids = aws_subnet.private[*].id
+
+  # Managed node groups are not rolled back with the control plane.
+  # They must be rolled back first via UpdateNodegroupVersion.
+  # https://docs.aws.amazon.com/eks/latest/userguide/rollback-cluster.html
+  version = var.kubernetes_version
+
+  # AL2 is no longer supported from Kubernetes 1.33.
+  # https://docs.aws.amazon.com/eks/latest/userguide/eks-optimized-ami.html
+  ami_type = "AL2023_x86_64_STANDARD"
+
+  # Allowed here only because the launch template does not set instance_type.
+  instance_types = var.instance_types
+  capacity_type  = var.capacity_type
+
+  launch_template {
+    id      = aws_launch_template.eks_nodes.id
+    version = aws_launch_template.eks_nodes.latest_version
+  }
+
+  scaling_config {
+    desired_size = var.node_group_desired_size
+    max_size     = var.node_group_max_size
+    min_size     = var.node_group_min_size
+  }
+
+  update_config {
+    max_unavailable_percentage = 25
+  }
+
+  labels = {
+    role        = "worker"
+    environment = var.environment
+  }
+
+  depends_on = [
+    aws_iam_role_policy_attachment.eks_worker_node_policy,
+    aws_iam_role_policy_attachment.eks_cni_policy,
+    aws_iam_role_policy_attachment.eks_container_registry_policy,
+  ]
+
+  tags = {
+    Name = "${var.cluster_name}-node-group"
+  }
+
+  lifecycle {
+    # desired_size is managed by the autoscaling group.
+    ignore_changes = [scaling_config[0].desired_size]
   }
 }
