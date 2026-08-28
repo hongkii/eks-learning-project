@@ -18,6 +18,16 @@ export AWS_PAGER=""
 ts() { date '+%Y-%m-%d %H:%M:%S%z'; }
 
 snapshot() {
+  # During the first minutes of a fresh deploy the cluster does not exist yet.
+  # One line keeps the log readable until it does.
+  local status
+  status="$(aws eks describe-cluster --name "${CLUSTER}" \
+    --query 'cluster.status' --output text 2>/dev/null)"
+  if [ -z "${status}" ] || [ "${status}" = "None" ]; then
+    printf '[%s] cluster %s not available yet\n' "$(ts)" "${CLUSTER}"
+    return
+  fi
+
   printf '\n============================================================\n'
   printf '[%s] SNAPSHOT\n' "$(ts)"
   printf '============================================================\n'

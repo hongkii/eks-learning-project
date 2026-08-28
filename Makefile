@@ -202,7 +202,7 @@ deploy: ## EKS 클러스터 배포 (약 15분 소요, 과금 시작). AUTO_APPRO
 	@$(MAKE) kubeconfig
 	@$(MAKE) cost-note
 
-deploy-all: session ## 배포부터 데모 앱까지 한 번에. 확인 프롬프트 없이 logs/ 에 기록하며 실행
+deploy-all: session ## 배포부터 데모 앱까지 한 번에. logs/ 에 기록
 	@$(MAKE) log T="_deploy-all AUTO_APPROVE=1" N=deploy
 
 _deploy-all: setup
