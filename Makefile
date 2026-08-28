@@ -89,6 +89,9 @@ log: ## 임의의 타깃을 logs/ 에 기록하며 실행. 예: make log T=insig
 	LOG=$(LOG_DIR)/$$NAME-$$STAMP.log; \
 	export TF_CLI_ARGS_init=-no-color TF_CLI_ARGS_validate=-no-color \
 	       TF_CLI_ARGS_plan=-no-color TF_CLI_ARGS_apply=-no-color TF_CLI_ARGS_destroy=-no-color; \
+	if [ -n "$$AWS_PROFILE" ]; then \
+		eval "$$(aws configure export-credentials --format env)" && unset AWS_PROFILE; \
+	fi; \
 	set -o pipefail; \
 	if [ "$(MONITOR)" = "1" ]; then \
 		CN=$$(cd terraform && terraform output -raw cluster_name 2>/dev/null || echo "$(CLUSTER_NAME)"); \
@@ -143,6 +146,12 @@ check-tools: ## 필수 도구 설치 확인
 session: ## MFA 세션 확보. 파이프 밖에서 먼저 실행해 코드 입력을 받는다
 	@echo "${BLUE}AWS 세션을 확인합니다$(if $(strip $(AWS_PROFILE)), (profile: $(AWS_PROFILE)),)...${NC}"
 	@aws sts get-caller-identity --query Arn --output text
+	@# Terraform 은 MFA 프롬프트를 직접 띄우지 못한다. 캐시된 세션에서 임시 자격 증명을
+	@# 꺼내 환경변수로 넘기므로, 여기서 만료 시각을 미리 확인해 둔다.
+	@if [ -n "$$AWS_PROFILE" ]; then \
+		EXP=$$(aws configure export-credentials --format env | sed -n 's/^export AWS_CREDENTIAL_EXPIRATION=//p'); \
+		echo "${GREEN}세션 만료: $$EXP${NC}"; \
+	fi
 
 check-aws: ## AWS 계정 및 EKS API 호출 가능 여부 확인
 	@echo "${BLUE}AWS 계정 확인 중...${NC}"
