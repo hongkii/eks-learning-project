@@ -32,10 +32,27 @@ export AWS_PROFILE=<your-profile>
 aws sts get-caller-identity
 ```
 
+`aws sts get-caller-identity` succeeds even when a policy denies everything else, so `make setup`
+also calls `aws eks list-clusters` to confirm the credentials can actually reach EKS.
+
+If the account enforces MFA, export the profile that carries `mfa_serial` before running anything.
+The CLI prompts for a code once and caches the session under `~/.aws/cli/cache`.
+
+```bash
+export AWS_PROFILE=<mfa-profile>
+```
+
+An upgrade or a rollback runs for 30 to 45 minutes. If the cached session expires in the middle,
+Terraform cannot prompt for a new code and the run fails. Raise `duration_seconds` on the profile
+to cover the whole session, up to the role's maximum.
+
+```ini
+[profile <mfa-profile>]
+duration_seconds = 28800
+```
+
 The Makefile sets `AWS_PAGER` to empty so AWS CLI v2 does not send output to a pager.
 To get the same behavior outside the Makefile, add `cli_pager=` to the profile in `~/.aws/config`.
-
-If the profile requires MFA, the AWS CLI prompts for a code on the first call of a session.
 
 ## Deploy
 
