@@ -13,9 +13,10 @@
 
 .PHONY: help check-tools check-aws setup validate plan deploy kubeconfig status \
         deploy-all _deploy-all upgrade _upgrade session \
-        test-app app-status app-open app-watch monitor clean-test-app destroy clean log log-merge \
+        test-app app-status app-open app-watch monitor probe clean-test-app destroy clean log log-merge \
         cost-note versions cluster-version addons insights \
-        rollback-nodegroup rollback-cluster rollback-a _rollback-a rollback-b _rollback-b \
+        rollback-nodegroup rollback-cluster wait-nodegroup rollback-rest _rollback-rest \
+        rollback-a _rollback-a rollback-b _rollback-b \
         updates drift
 
 # 개인 설정은 Makefile.local 에 둔다. gitignore 대상이라 저장소에는 올라가지 않는다.
@@ -90,7 +91,10 @@ log: ## 임의의 타깃을 logs/ 에 기록하며 실행. 예: make log T=insig
 	export TF_CLI_ARGS_init=-no-color TF_CLI_ARGS_validate=-no-color \
 	       TF_CLI_ARGS_plan=-no-color TF_CLI_ARGS_apply=-no-color TF_CLI_ARGS_destroy=-no-color; \
 	if [ -n "$$AWS_PROFILE" ]; then \
-		eval "$$(aws configure export-credentials --format env)" && unset AWS_PROFILE; \
+		CREDS=$$(aws configure export-credentials --format env 2>&1) || \
+			{ echo "${RED}자격 증명을 가져오지 못했습니다. make session 을 먼저 실행하세요${NC}"; echo "$$CREDS"; exit 1; }; \
+		eval "$$CREDS"; unset AWS_PROFILE; \
+		echo "${BLUE}세션 만료: $$AWS_CREDENTIAL_EXPIRATION${NC}"; \
 	fi; \
 	set -o pipefail; \
 	if [ "$(MONITOR)" = "1" ]; then \
@@ -279,6 +283,12 @@ app-open: ## 데모 앱을 로컬 8080 포트로 연결. 끊기면 다시 연결
 		sleep 2; \
 	done
 
+probe: ## Service 의 Ready 엔드포인트 수를 1초마다 기록 (Ctrl+C 로 종료)
+	@mkdir -p $(LOG_DIR)
+	@LOG=$(LOG_DIR)/probe-$$(date '+%Y%m%d-%H%M%S').log; \
+	echo "${BLUE}엔드포인트를 감시합니다. 종료는 Ctrl+C -> $$LOG${NC}"; \
+	./scripts/probe.sh 2>&1 | while IFS= read -r l; do printf '%s\n' "$$l" | tee -a $$LOG; done
+
 monitor: ## 클러스터·노드·애드온·파드 상태를 주기적으로 출력 (Ctrl+C 로 종료)
 	@CN=$$(cd terraform && terraform output -raw cluster_name 2>/dev/null || echo "$(CLUSTER_NAME)"); \
 	CLUSTER=$$CN INTERVAL=$(INTERVAL) ./scripts/monitor.sh
@@ -385,12 +395,14 @@ rollback-nodegroup: ## 노드 그룹만 이전 버전으로 롤백 (VERSION=1.35
 		echo "update id: $$UPD"; \
 		while :; do \
 			ST=$$(aws eks describe-update --name $$CN --nodegroup-name $$NG --update-id $$UPD \
-				--query 'update.status' --output text); \
+				--query 'update.status' --output text 2>/dev/null); \
+			[ -n "$$ST" ] || { echo "${RED}상태를 조회하지 못했습니다. 중단합니다${NC}"; exit 1; }; \
 			echo "  $$(date '+%H:%M:%S') $$ST"; \
 			[ "$$ST" = "InProgress" ] || break; \
 			sleep 30; \
 		done; \
 	done
+	@$(MAKE) wait-nodegroup
 	@echo "${BLUE}=== 노드 그룹 롤백 종료 $$(date '+%Y-%m-%d %H:%M:%S') ===${NC}"
 
 rollback-cluster: ## 컨트롤 플레인을 이전 버전으로 롤백 (VERSION=1.35 필요)
@@ -405,17 +417,46 @@ rollback-cluster: ## 컨트롤 플레인을 이전 버전으로 롤백 (VERSION=
 	fi
 	@echo "${BLUE}=== 컨트롤 플레인 롤백 시작 $$(date '+%Y-%m-%d %H:%M:%S') ===${NC}"
 	@CN=$$(cd terraform && terraform output -raw cluster_name 2>/dev/null || echo "$(CLUSTER_NAME)"); \
-	OUT=$$(aws eks update-cluster-version --name $$CN --kubernetes-version $(VERSION) --output json); \
+	OUT=$$(aws eks update-cluster-version --name $$CN --kubernetes-version $(VERSION) --output json) || \
+		{ echo "${RED}롤백 요청이 실패했습니다${NC}"; exit 1; }; \
 	echo "$$OUT" | jq -r '.update | "id: \(.id)\ntype: \(.type)\nstatus: \(.status)"'; \
 	UPD=$$(echo "$$OUT" | jq -r '.update.id'); \
+	[ -n "$$UPD" ] && [ "$$UPD" != "null" ] || { echo "${RED}update id 를 얻지 못했습니다${NC}"; exit 1; }; \
 	while :; do \
-		ST=$$(aws eks describe-update --name $$CN --update-id $$UPD --query 'update.status' --output text); \
+		ST=$$(aws eks describe-update --name $$CN --update-id $$UPD --query 'update.status' --output text 2>/dev/null); \
+		[ -n "$$ST" ] || { echo "${RED}상태를 조회하지 못했습니다. 중단합니다${NC}"; exit 1; }; \
 		echo "  $$(date '+%H:%M:%S') $$ST"; \
 		[ "$$ST" = "InProgress" ] || break; \
 		sleep 30; \
 	done
 	@echo "${BLUE}=== 컨트롤 플레인 롤백 종료 $$(date '+%Y-%m-%d %H:%M:%S') ===${NC}"
 	@echo "${YELLOW}위 type 이 VersionRollback 이면 롤백으로 처리된 것입니다${NC}"
+
+wait-nodegroup: ## 노드 그룹이 ACTIVE 가 될 때까지 대기
+	@CN=$$(cd terraform && terraform output -raw cluster_name 2>/dev/null || echo "$(CLUSTER_NAME)"); \
+	for NG in $$(aws eks list-nodegroups --cluster-name $$CN --query 'nodegroups[]' --output text); do \
+		while :; do \
+			ST=$$(aws eks describe-nodegroup --cluster-name $$CN --nodegroup-name $$NG \
+				--query 'nodegroup.status' --output text 2>/dev/null); \
+			[ -n "$$ST" ] || { echo "${RED}상태를 조회하지 못했습니다. 중단합니다${NC}"; exit 1; }; \
+			echo "  $$(date '+%H:%M:%S') $$NG $$ST"; \
+			[ "$$ST" = "UPDATING" ] || [ "$$ST" = "CREATING" ] || break; \
+			sleep 30; \
+		done; \
+	done
+
+rollback-rest: session ## 중단된 롤백의 컨트롤 플레인부터 이어서 실행. VERSION 필요
+	@test -n "$(VERSION)" || { echo "${RED}VERSION 을 지정하세요. 예: make rollback-rest VERSION=1.35${NC}"; exit 1; }
+	@$(MAKE) log T="_rollback-rest VERSION=$(VERSION) AUTO_APPROVE=1" N=rollback-rest MONITOR=1
+
+_rollback-rest:
+	@$(MAKE) wait-nodegroup
+	@$(MAKE) insights
+	@$(MAKE) rollback-cluster VERSION=$(VERSION)
+	@$(MAKE) cluster-version
+	@$(MAKE) addons
+	@$(MAKE) updates
+	@$(MAKE) drift
 
 rollback-a: session ## 패턴 A 롤백을 한 번에 (노드 그룹 → 컨트롤 플레인). VERSION 필요
 	@test -n "$(VERSION)" || { echo "${RED}VERSION 을 지정하세요. 예: make rollback-a VERSION=1.35${NC}"; exit 1; }

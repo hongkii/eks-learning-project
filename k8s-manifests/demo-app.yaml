@@ -52,18 +52,39 @@ spec:
               # STARTED_AT changes only when the pod is recreated. It stays the same
               # through a control plane rollback and changes through a node rollback.
               STARTED_AT=$(date -u '+%Y-%m-%d %H:%M:%S UTC')
-              cat > /usr/share/nginx/html/index.html <<EOF
+              SA=/var/run/secrets/kubernetes.io/serviceaccount
+
+              # /version is readable by any authenticated user through system:discovery,
+              # so the page can show the API server version without extra RBAC.
+              # https://kubernetes.io/docs/reference/access-authn-authz/rbac/#discovery-roles
+              api_version() {
+                wget -qO- --no-check-certificate \
+                  --header="Authorization: Bearer $(cat $SA/token)" \
+                  https://kubernetes.default.svc/version 2>/dev/null \
+                  | tr ',' '\n' | grep '"gitVersion"' | cut -d'"' -f4
+              }
+
+              render() {
+                cat > /usr/share/nginx/html/index.html <<EOF
               <html><head><meta http-equiv="refresh" content="2"></head>
               <body style="font-family:monospace;font-size:16px">
               <h1>EKS version rollback check</h1>
               <table cellpadding="4">
+              <tr><td>control plane</td><td><b>$(api_version)</b></td></tr>
               <tr><td>pod</td><td>$POD_NAME</td></tr>
               <tr><td>node</td><td>$NODE_NAME</td></tr>
               <tr><td>pod IP</td><td>$POD_IP</td></tr>
               <tr><td>started at</td><td>$STARTED_AT</td></tr>
+              <tr><td>rendered at</td><td>$(date -u '+%Y-%m-%d %H:%M:%S UTC')</td></tr>
               </table>
               </body></html>
               EOF
+              }
+
+              # Re-rendered every 5s so a control plane rollback shows up in the browser
+              # without the pod being restarted.
+              render
+              while :; do sleep 5; render; done &
               exec nginx -g 'daemon off;'
           resources:
             requests:
