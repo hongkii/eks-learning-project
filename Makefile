@@ -268,10 +268,14 @@ app-status: ## 데모 앱의 파드가 어느 노드에서 도는지 확인
 app-open: ## 데모 앱을 로컬 8080 포트로 연결. 끊기면 다시 연결한다
 	@echo "${BLUE}http://localhost:8080 에서 확인하세요. 종료는 Ctrl+C${NC}"
 	@# port-forward 는 특정 파드에 붙으므로 노드 교체로 파드가 죽으면 종료된다.
-	@while :; do \
+	@LOG=$(LOG_DIR)/app-open-$$(date '+%Y%m%d-%H%M%S').log; \
+	mkdir -p $(LOG_DIR); \
+	while :; do \
 		kubectl port-forward svc/demo-app 8080:80 2>&1 \
-			| while IFS= read -r l; do printf '[%s] %s\n' "$$(date '+%H:%M:%S')" "$$l"; done; \
-		printf '[%s] 연결이 끊겼습니다. 2초 후 재연결합니다\n' "$$(date '+%H:%M:%S')"; \
+			| while IFS= read -r l; do \
+				printf '[%s] %s\n' "$$(date '+%H:%M:%S')" "$$l" | tee -a $$LOG; \
+			done; \
+		printf '[%s] 연결이 끊겼습니다. 2초 후 재연결합니다\n' "$$(date '+%H:%M:%S')" | tee -a $$LOG; \
 		sleep 2; \
 	done
 
@@ -283,9 +287,14 @@ app-watch: ## 롤백 중 파드 상태를 실시간 관찰. 화면과 logs/ 에 
 	@mkdir -p $(LOG_DIR)
 	@LOG=$(LOG_DIR)/app-watch-$$(date '+%Y%m%d-%H%M%S').log; \
 	echo "${BLUE}파드 상태를 관찰합니다. 종료는 Ctrl+C -> $$LOG${NC}"; \
-	kubectl get pods -l app=demo-app -o wide --watch 2>&1 \
-		| while IFS= read -r l; do printf '[%s] %s\n' "$$(date '+%H:%M:%S')" "$$l"; done \
-		| tee $$LOG
+	while :; do \
+		kubectl get pods -l app=demo-app -o wide --watch 2>&1 \
+			| while IFS= read -r l; do \
+				printf '[%s] %s\n' "$$(date '+%H:%M:%S')" "$$l" | tee -a $$LOG; \
+			done; \
+		printf '[%s] watch 가 끊겼습니다. 다시 붙습니다\n' "$$(date '+%H:%M:%S')" | tee -a $$LOG; \
+		sleep 1; \
+	done
 
 clean-test-app: ## 데모 앱 삭제
 	@kubectl delete -f k8s-manifests/demo-app.yaml --ignore-not-found
