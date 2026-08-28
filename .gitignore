@@ -47,7 +47,9 @@ Thumbs.db
 *~
 
 # Logs
+# Verification output contains the account ID, ARNs and subnet IDs.
 *.log
+logs/
 
 # Backup files
 *.backup
