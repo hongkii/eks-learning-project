@@ -40,13 +40,17 @@ If the profile requires MFA, the AWS CLI prompts for a code on the first call of
 ## Deploy
 
 ```bash
-make plan        # review the execution plan
-make deploy-all  # deploy, then check status and versions and roll out the demo app
+make plan                    # review the execution plan
+make log T=deploy-all        # deploy and record the whole run under logs/
 ```
 
-`deploy-all` runs `setup`, `deploy`, `status`, `cluster-version` and `test-app` in order and
-prints a timestamp at both ends. `deploy` still asks for a `yes` confirmation before applying.
-Run the steps individually if you want to stop between them.
+`deploy-all` runs `setup`, `deploy`, `status`, `cluster-version`, `addons` and `test-app`
+in order and prints a timestamp at both ends. `deploy` asks for a `yes` confirmation before
+applying; pass `AUTO_APPROVE=1` to skip it.
+
+`make log T=<target>` runs any target, tees the output to `logs/<target>-<timestamp>.log`
+and strips the ANSI colors from the file. `logs/` is gitignored because the output contains
+the account ID and resource identifiers.
 
 Settings live in `terraform/terraform.tfvars`, which is gitignored.
 

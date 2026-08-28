@@ -12,14 +12,18 @@
 # =============================================================================
 
 .PHONY: help check-tools check-aws setup validate plan deploy deploy-all kubeconfig status \
-        test-app app-status app-open app-watch clean-test-app destroy clean \
-        cost-note versions cluster-version insights \
+        test-app app-status app-open app-watch clean-test-app destroy clean log \
+        cost-note versions cluster-version addons insights \
         rollback-nodegroup rollback-cluster updates drift
 
 # 기본 변수
 CLUSTER_NAME ?= my-study-eks
 AWS_REGION ?= ap-northeast-1
 TFVARS_FILE = terraform/terraform.tfvars
+LOG_DIR = logs
+
+# 1 이면 배포와 롤백의 yes 확인을 건너뛴다. 기본은 확인을 받는다.
+AUTO_APPROVE ?= 0
 
 # AWS CLI v2 는 기본으로 출력을 pager 에 넣는다. 빈 값이면 pager 를 쓰지 않는다.
 # https://docs.aws.amazon.com/cli/latest/userguide/cli-usage-pagination.html
@@ -39,10 +43,8 @@ help: ## 사용 가능한 명령어 표시
 	@grep -E '^[a-zA-Z_-]+:.*?## .*$$' $(MAKEFILE_LIST) | sort | awk 'BEGIN {FS = ":.*?## "}; {printf "  ${YELLOW}%-15s${NC} %s\n", $$1, $$2}'
 	@echo ""
 	@echo "${GREEN}배포 순서:${NC}"
-	@echo "  1. make setup      - 초기 설정"
-	@echo "  2. make plan       - 실행 계획 확인"
-	@echo "  3. make deploy-all - 배포 + 상태 확인 + 데모 앱까지 한 번에"
-	@echo "     make deploy     - 배포만 (확인 프롬프트 있음)"
+	@echo "  1. make plan       - 실행 계획 확인"
+	@echo "  2. make deploy-all - 배포 + 상태 + 버전 + 애드온 + 데모 앱까지 한 번에"
 	@echo ""
 	@echo "${GREEN}버전 롤백 검증 순서:${NC}"
 	@echo "  1. make versions                        - 지원 버전 확인"
@@ -51,10 +53,26 @@ help: ## 사용 가능한 명령어 표시
 	@echo "  4. make insights                        - 롤백 가능 여부 확인"
 	@echo "  5. make rollback-nodegroup VERSION=1.35 - 노드 그룹 먼저 (패턴 A 만)"
 	@echo "  6. make rollback-cluster VERSION=1.35   - 컨트롤 플레인"
-	@echo "  7. make updates                         - 진행 상태 확인"
-	@echo "  8. make drift                           - Terraform 차이 확인"
+	@echo "  7. make updates                         - type 이 VersionRollback 인지"
+	@echo "  8. make addons                          - 애드온은 안 돌아갔는지"
+	@echo "  9. make drift                           - Terraform 차이 확인"
+	@echo ""
+	@echo "${GREEN}옵션:${NC}"
+	@echo "  make log T=deploy-all      - logs/ 에 기록하며 실행"
+	@echo "  make deploy AUTO_APPROVE=1 - yes 확인 생략"
 	@echo ""
 	@echo "${RED}검증 후 반드시 make destroy 를 실행하세요${NC}"
+
+log: ## 임의의 타깃을 logs/ 에 기록하며 실행. 예: make log T=deploy-all
+	@test -n "$(T)" || { echo "${RED}T 를 지정하세요. 예: make log T=deploy-all${NC}"; exit 1; }
+	@mkdir -p $(LOG_DIR)
+	@LOG=$(LOG_DIR)/$$(echo "$(T)" | tr ' =/' '---')-$$(date '+%Y%m%d-%H%M%S').log; \
+	set -o pipefail; \
+	$(MAKE) $(T) 2>&1 | tee $$LOG; \
+	RC=$$?; \
+	perl -pi -e 's/\x1b\[[0-9;]*[a-zA-Z]//g' $$LOG; \
+	echo "${GREEN}로그: $$LOG${NC}"; \
+	exit $$RC
 
 check-tools: ## 필수 도구 설치 확인
 	@echo "${BLUE}필수 도구 설치 확인 중...${NC}"
@@ -101,12 +119,16 @@ plan: setup validate ## Terraform 실행 계획 확인
 	@echo "${GREEN}✓ 실행 계획 확인이 완료되었습니다${NC}"
 	@echo "${YELLOW}계획을 검토한 후 'make deploy' 명령으로 배포하세요${NC}"
 
-deploy: ## EKS 클러스터 배포 (약 15분 소요, 과금 시작)
+deploy: ## EKS 클러스터 배포 (약 15분 소요, 과금 시작). AUTO_APPROVE=1 로 확인 생략
 	@echo "${RED}⚠️  AWS 리소스를 생성합니다. 과금이 시작됩니다.${NC}"
 	@cd terraform && terraform plan -out=tfplan
 	@echo ""
-	@printf "${YELLOW}위 계획대로 배포합니다. 계속하려면 yes 를 입력하세요: ${NC}"; \
-	read ans; [ "$$ans" = "yes" ] || { echo "${RED}중단했습니다${NC}"; exit 1; }
+	@if [ "$(AUTO_APPROVE)" = "1" ]; then \
+		echo "${YELLOW}AUTO_APPROVE=1 이므로 확인 없이 진행합니다${NC}"; \
+	else \
+		printf "${YELLOW}위 계획대로 배포합니다. 계속하려면 yes 를 입력하세요: ${NC}"; \
+		read ans; [ "$$ans" = "yes" ] || { echo "${RED}중단했습니다${NC}"; exit 1; }; \
+	fi
 	@cd terraform && terraform apply --parallelism=30 tfplan
 	@rm -f terraform/tfplan
 	@echo "${GREEN}✓ EKS 클러스터 배포가 완료되었습니다${NC}"
@@ -118,6 +140,7 @@ deploy-all: setup ## 배포 + 상태 확인 + 버전 확인 + 데모 앱을 한 
 	@$(MAKE) deploy
 	@$(MAKE) status
 	@$(MAKE) cluster-version
+	@$(MAKE) addons
 	@$(MAKE) test-app
 	@echo "${BLUE}=== 완료 $$(date '+%Y-%m-%d %H:%M:%S') ===${NC}"
 	@echo "${YELLOW}다음: tfvars 의 kubernetes_version 을 1.36 으로 바꾸고 make deploy${NC}"
@@ -205,11 +228,21 @@ versions: ## 사용 가능한 EKS 버전과 지원 상태 확인
 cluster-version: ## 현재 클러스터와 노드 그룹의 버전 확인
 	@CN=$$(cd terraform && terraform output -raw cluster_name 2>/dev/null || echo "$(CLUSTER_NAME)"); \
 	echo "${BLUE}컨트롤 플레인${NC}"; \
-	aws eks describe-cluster --name $$CN --query 'cluster.{version:version,platform:platformVersion,status:status}' --output table; \
+	aws eks describe-cluster --name $$CN \
+		--query 'cluster.{version:version,platform:platformVersion,status:status,upgradePolicy:upgradePolicy.supportType}' --output table; \
 	echo "${BLUE}노드 그룹${NC}"; \
 	for NG in $$(aws eks list-nodegroups --cluster-name $$CN --query 'nodegroups[]' --output text); do \
 		aws eks describe-nodegroup --cluster-name $$CN --nodegroup-name $$NG \
 			--query 'nodegroup.{name:nodegroupName,version:version,release:releaseVersion,status:status}' --output table; \
+	done; \
+	echo "${BLUE}노드의 kubelet 버전${NC}"; \
+	kubectl get nodes -o custom-columns='NODE:.metadata.name,KUBELET:.status.nodeInfo.kubeletVersion,AMI:.status.nodeInfo.osImage' 2>/dev/null || true
+
+addons: ## 애드온 버전 확인 (롤백 시 애드온은 되돌아가지 않음을 확인)
+	@CN=$$(cd terraform && terraform output -raw cluster_name 2>/dev/null || echo "$(CLUSTER_NAME)"); \
+	for A in $$(aws eks list-addons --cluster-name $$CN --query 'addons[]' --output text); do \
+		aws eks describe-addon --cluster-name $$CN --addon-name $$A \
+			--query 'addon.{name:addonName,version:addonVersion,status:status}' --output table; \
 	done
 
 insights: ## 롤백 가능 여부 인사이트 확인 (업그레이드 후 7일간만 표시)
@@ -233,8 +266,12 @@ rollback-nodegroup: ## 노드 그룹만 이전 버전으로 롤백 (VERSION=1.35
 rollback-cluster: ## 컨트롤 플레인을 이전 버전으로 롤백 (VERSION=1.35 필요)
 	@test -n "$(VERSION)" || { echo "${RED}VERSION 을 지정하세요. 예: make rollback-cluster VERSION=1.35${NC}"; exit 1; }
 	@echo "${RED}⚠️  컨트롤 플레인을 $(VERSION) 으로 롤백합니다. 노드 그룹을 먼저 롤백했는지 확인하세요.${NC}"
-	@printf "${YELLOW}계속하려면 yes 를 입력하세요: ${NC}"; \
-	read ans; [ "$$ans" = "yes" ] || { echo "${RED}중단했습니다${NC}"; exit 1; }
+	@if [ "$(AUTO_APPROVE)" = "1" ]; then \
+		echo "${YELLOW}AUTO_APPROVE=1 이므로 확인 없이 진행합니다${NC}"; \
+	else \
+		printf "${YELLOW}계속하려면 yes 를 입력하세요: ${NC}"; \
+		read ans; [ "$$ans" = "yes" ] || { echo "${RED}중단했습니다${NC}"; exit 1; }; \
+	fi
 	@echo "${BLUE}=== 컨트롤 플레인 롤백 시작 $$(date '+%Y-%m-%d %H:%M:%S') ===${NC}"
 	@CN=$$(cd terraform && terraform output -raw cluster_name 2>/dev/null || echo "$(CLUSTER_NAME)"); \
 	aws eks update-cluster-version --name $$CN --kubernetes-version $(VERSION)
