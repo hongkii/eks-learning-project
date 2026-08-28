@@ -11,10 +11,12 @@
 #   make clean     - 임시 파일 정리
 # =============================================================================
 
-.PHONY: help check-tools check-aws setup validate plan deploy deploy-all kubeconfig status \
+.PHONY: help check-tools check-aws setup validate plan deploy kubeconfig status \
+        deploy-all _deploy-all upgrade _upgrade \
         test-app app-status app-open app-watch clean-test-app destroy clean log \
         cost-note versions cluster-version addons insights \
-        rollback-nodegroup rollback-cluster updates drift
+        rollback-nodegroup rollback-cluster rollback-a _rollback-a rollback-b _rollback-b \
+        updates drift
 
 # 기본 변수
 CLUSTER_NAME ?= my-study-eks
@@ -46,31 +48,38 @@ help: ## 사용 가능한 명령어 표시
 	@echo "  1. make plan       - 실행 계획 확인"
 	@echo "  2. make deploy-all - 배포 + 상태 + 버전 + 애드온 + 데모 앱까지 한 번에"
 	@echo ""
-	@echo "${GREEN}버전 롤백 검증 순서:${NC}"
-	@echo "  1. make versions                        - 지원 버전 확인"
-	@echo "  2. tfvars 의 kubernetes_version 을 1.36 으로 변경"
-	@echo "  3. make deploy                          - 1.35 → 1.36 업그레이드"
-	@echo "  4. make insights                        - 롤백 가능 여부 확인"
-	@echo "  5. make rollback-nodegroup VERSION=1.35 - 노드 그룹 먼저 (패턴 A 만)"
-	@echo "  6. make rollback-cluster VERSION=1.35   - 컨트롤 플레인"
-	@echo "  7. make updates                         - type 이 VersionRollback 인지"
-	@echo "  8. make addons                          - 애드온은 안 돌아갔는지"
-	@echo "  9. make drift                           - Terraform 차이 확인"
+	@echo "${GREEN}버전 롤백 검증 순서 (패턴 A: 컨트롤 플레인과 노드를 함께 올림):${NC}"
+	@echo "  1. tfvars 의 kubernetes_version 을 1.36 으로 변경"
+	@echo "  2. make upgrade                - 업그레이드 + 버전 + 애드온 + 인사이트"
+	@echo "  3. make rollback-a VERSION=1.35 - 노드 그룹부터 되돌리고 drift 까지"
+	@echo ""
+	@echo "${GREEN}버전 롤백 검증 순서 (패턴 B: 컨트롤 플레인만 먼저):${NC}"
+	@echo "  1. tfvars 에 node_group_kubernetes_version = \"1.35\" 추가"
+	@echo "  2. make upgrade                - 컨트롤 플레인만 1.36 으로"
+	@echo "  3. make rollback-b VERSION=1.35 - 컨트롤 플레인만 되돌리고 drift 까지"
 	@echo ""
 	@echo "${GREEN}옵션:${NC}"
-	@echo "  make log T=deploy-all      - logs/ 에 기록하며 실행"
+	@echo "  make log T=insights        - 임의 타깃을 logs/ 에 기록하며 실행"
 	@echo "  make deploy AUTO_APPROVE=1 - yes 확인 생략"
+	@echo "  ${YELLOW}롤백 관찰용으로 다른 터미널에서 make app-watch 를 띄워두세요${NC}"
 	@echo ""
 	@echo "${RED}검증 후 반드시 make destroy 를 실행하세요${NC}"
 
-log: ## 임의의 타깃을 logs/ 에 기록하며 실행. 예: make log T=deploy-all
-	@test -n "$(T)" || { echo "${RED}T 를 지정하세요. 예: make log T=deploy-all${NC}"; exit 1; }
+log: ## 임의의 타깃을 logs/ 에 기록하며 실행. 예: make log T=insights
+	@test -n "$(T)" || { echo "${RED}T 를 지정하세요. 예: make log T=insights${NC}"; exit 1; }
 	@mkdir -p $(LOG_DIR)
-	@LOG=$(LOG_DIR)/$$(echo "$(T)" | tr ' =/' '---')-$$(date '+%Y%m%d-%H%M%S').log; \
+	@NAME="$(N)"; \
+	[ -n "$$NAME" ] || NAME=$$(echo "$(T)" | tr ' =/' '---'); \
+	LOG=$(LOG_DIR)/$$NAME-$$(date '+%Y%m%d-%H%M%S').log; \
 	set -o pipefail; \
+	TF_CLI_ARGS_init=-no-color \
+	TF_CLI_ARGS_validate=-no-color \
+	TF_CLI_ARGS_plan=-no-color \
+	TF_CLI_ARGS_apply=-no-color \
+	TF_CLI_ARGS_destroy=-no-color \
 	$(MAKE) $(T) 2>&1 | tee $$LOG; \
 	RC=$$?; \
-	perl -pi -e 's/\x1b\[[0-9;]*[a-zA-Z]//g' $$LOG; \
+	perl -pi -e 's/\x1b\[[0-9;]*[a-zA-Z]//g; s/\r$$//' $$LOG; \
 	echo "${GREEN}로그: $$LOG${NC}"; \
 	exit $$RC
 
@@ -135,7 +144,10 @@ deploy: ## EKS 클러스터 배포 (약 15분 소요, 과금 시작). AUTO_APPRO
 	@$(MAKE) kubeconfig
 	@$(MAKE) cost-note
 
-deploy-all: setup ## 배포 + 상태 확인 + 버전 확인 + 데모 앱을 한 번에 (검증용)
+deploy-all: ## 배포부터 데모 앱까지 한 번에. 확인 프롬프트 없이 logs/ 에 기록하며 실행
+	@$(MAKE) log T="_deploy-all AUTO_APPROVE=1" N=deploy
+
+_deploy-all: setup
 	@echo "${BLUE}=== 시작 $$(date '+%Y-%m-%d %H:%M:%S') ===${NC}"
 	@$(MAKE) deploy
 	@$(MAKE) status
@@ -143,7 +155,18 @@ deploy-all: setup ## 배포 + 상태 확인 + 버전 확인 + 데모 앱을 한 
 	@$(MAKE) addons
 	@$(MAKE) test-app
 	@echo "${BLUE}=== 완료 $$(date '+%Y-%m-%d %H:%M:%S') ===${NC}"
-	@echo "${YELLOW}다음: tfvars 의 kubernetes_version 을 1.36 으로 바꾸고 make deploy${NC}"
+	@echo "${YELLOW}다음: tfvars 의 kubernetes_version 을 1.36 으로 바꾸고 make upgrade${NC}"
+
+upgrade: ## tfvars 변경 후 업그레이드. 확인 프롬프트 없이 logs/ 에 기록하며 실행
+	@$(MAKE) log T="_upgrade AUTO_APPROVE=1" N=upgrade
+
+_upgrade:
+	@echo "${BLUE}=== 업그레이드 시작 $$(date '+%Y-%m-%d %H:%M:%S') ===${NC}"
+	@$(MAKE) deploy
+	@$(MAKE) cluster-version
+	@$(MAKE) addons
+	@$(MAKE) insights
+	@echo "${BLUE}=== 업그레이드 완료 $$(date '+%Y-%m-%d %H:%M:%S') ===${NC}"
 
 kubeconfig: ## kubectl 설정 업데이트
 	@echo "${BLUE}kubectl 설정을 업데이트합니다...${NC}"
@@ -259,9 +282,18 @@ rollback-nodegroup: ## 노드 그룹만 이전 버전으로 롤백 (VERSION=1.35
 	@CN=$$(cd terraform && terraform output -raw cluster_name 2>/dev/null || echo "$(CLUSTER_NAME)"); \
 	for NG in $$(aws eks list-nodegroups --cluster-name $$CN --query 'nodegroups[]' --output text); do \
 		echo "${BLUE}$$NG 를 $(VERSION) 으로 롤백${NC}"; \
-		aws eks update-nodegroup-version --cluster-name $$CN --nodegroup-name $$NG \
-			--kubernetes-version $(VERSION); \
+		UPD=$$(aws eks update-nodegroup-version --cluster-name $$CN --nodegroup-name $$NG \
+			--kubernetes-version $(VERSION) --query 'update.id' --output text); \
+		echo "update id: $$UPD"; \
+		while :; do \
+			ST=$$(aws eks describe-update --name $$CN --nodegroup-name $$NG --update-id $$UPD \
+				--query 'update.status' --output text); \
+			echo "  $$(date '+%H:%M:%S') $$ST"; \
+			[ "$$ST" = "InProgress" ] || break; \
+			sleep 30; \
+		done; \
 	done
+	@echo "${BLUE}=== 노드 그룹 롤백 종료 $$(date '+%Y-%m-%d %H:%M:%S') ===${NC}"
 
 rollback-cluster: ## 컨트롤 플레인을 이전 버전으로 롤백 (VERSION=1.35 필요)
 	@test -n "$(VERSION)" || { echo "${RED}VERSION 을 지정하세요. 예: make rollback-cluster VERSION=1.35${NC}"; exit 1; }
@@ -274,9 +306,42 @@ rollback-cluster: ## 컨트롤 플레인을 이전 버전으로 롤백 (VERSION=
 	fi
 	@echo "${BLUE}=== 컨트롤 플레인 롤백 시작 $$(date '+%Y-%m-%d %H:%M:%S') ===${NC}"
 	@CN=$$(cd terraform && terraform output -raw cluster_name 2>/dev/null || echo "$(CLUSTER_NAME)"); \
-	aws eks update-cluster-version --name $$CN --kubernetes-version $(VERSION)
-	@echo "${YELLOW}응답의 type 이 VersionRollback 이면 롤백으로 처리된 것입니다${NC}"
-	@echo "${BLUE}진행 상황은 make updates 로 확인하세요${NC}"
+	OUT=$$(aws eks update-cluster-version --name $$CN --kubernetes-version $(VERSION) --output json); \
+	echo "$$OUT" | jq -r '.update | "id: \(.id)\ntype: \(.type)\nstatus: \(.status)"'; \
+	UPD=$$(echo "$$OUT" | jq -r '.update.id'); \
+	while :; do \
+		ST=$$(aws eks describe-update --name $$CN --update-id $$UPD --query 'update.status' --output text); \
+		echo "  $$(date '+%H:%M:%S') $$ST"; \
+		[ "$$ST" = "InProgress" ] || break; \
+		sleep 30; \
+	done
+	@echo "${BLUE}=== 컨트롤 플레인 롤백 종료 $$(date '+%Y-%m-%d %H:%M:%S') ===${NC}"
+	@echo "${YELLOW}위 type 이 VersionRollback 이면 롤백으로 처리된 것입니다${NC}"
+
+rollback-a: ## 패턴 A 롤백을 한 번에 (노드 그룹 → 컨트롤 플레인). VERSION 필요
+	@test -n "$(VERSION)" || { echo "${RED}VERSION 을 지정하세요. 예: make rollback-a VERSION=1.35${NC}"; exit 1; }
+	@$(MAKE) log T="_rollback-a VERSION=$(VERSION) AUTO_APPROVE=1" N=rollback-a
+
+_rollback-a:
+	@$(MAKE) insights
+	@$(MAKE) rollback-nodegroup VERSION=$(VERSION)
+	@$(MAKE) rollback-cluster VERSION=$(VERSION)
+	@$(MAKE) cluster-version
+	@$(MAKE) addons
+	@$(MAKE) updates
+	@$(MAKE) drift
+
+rollback-b: ## 패턴 B 롤백을 한 번에 (컨트롤 플레인만). VERSION 필요
+	@test -n "$(VERSION)" || { echo "${RED}VERSION 을 지정하세요. 예: make rollback-b VERSION=1.35${NC}"; exit 1; }
+	@$(MAKE) log T="_rollback-b VERSION=$(VERSION) AUTO_APPROVE=1" N=rollback-b
+
+_rollback-b:
+	@$(MAKE) insights
+	@$(MAKE) rollback-cluster VERSION=$(VERSION)
+	@$(MAKE) cluster-version
+	@$(MAKE) addons
+	@$(MAKE) updates
+	@$(MAKE) drift
 
 updates: ## 클러스터 업데이트 이력과 진행 상태 확인
 	@CN=$$(cd terraform && terraform output -raw cluster_name 2>/dev/null || echo "$(CLUSTER_NAME)"); \

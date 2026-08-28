@@ -80,14 +80,9 @@ Change `kubernetes_version` only. The node group follows it, so the node group h
 rolled back before the control plane.
 
 ```bash
-make versions                            # check support status per version
 # set kubernetes_version = "1.36" in terraform.tfvars
-make deploy                              # 1.35 to 1.36, control plane and nodes
-make insights                            # check ROLLBACK_READINESS
-make rollback-nodegroup VERSION=1.35     # node group first
-make rollback-cluster VERSION=1.35       # control plane
-make updates                             # confirm the type is VersionRollback
-make drift                               # check the difference against Terraform
+make upgrade                  # 1.35 to 1.36, control plane and nodes
+make rollback-a VERSION=1.35  # node group first, then the control plane
 ```
 
 **Pattern B: upgrade the control plane first and bake.** This is what AWS recommends.
@@ -96,10 +91,13 @@ insight stays PASSING, and the rollback only touches the control plane.
 
 ```bash
 # set kubernetes_version = "1.36" and node_group_kubernetes_version = "1.35"
-make deploy                              # control plane only
-make insights
-make rollback-cluster VERSION=1.35       # no node group rollback needed
+make upgrade                  # control plane only
+make rollback-b VERSION=1.35  # no node group rollback needed
 ```
+
+Both rollback targets run `insights` first, wait for each update to leave `InProgress`,
+then print `cluster-version`, `addons`, `updates` and `drift`. Everything lands in `logs/`.
+Keep `make app-watch` running in another terminal to see whether pods stay up.
 
 Add-ons are not rolled back in either pattern, so they need to be handled separately.
 
