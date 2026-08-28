@@ -78,7 +78,7 @@ help: ## 사용 가능한 명령어 표시
 	@echo "  make deploy AUTO_APPROVE=1 - yes 확인 생략"
 	@echo "  ${YELLOW}롤백 관찰용으로 다른 터미널에서 make app-watch 를 띄워두세요${NC}"
 	@echo ""
-	@echo "${RED}검증 후 반드시 make destroy 를 실행하세요${NC}"
+	@echo "${YELLOW}검증이 끝나면 make destroy 로 정리하세요${NC}"
 
 log: ## 임의의 타깃을 logs/ 에 기록하며 실행. 예: make log T=insights
 	@test -n "$(T)" || { echo "${RED}T 를 지정하세요. 예: make log T=insights${NC}"; exit 1; }
@@ -165,7 +165,7 @@ setup: check-tools check-aws ## 초기 설정 (terraform.tfvars 파일 생성)
 		echo "${YELLOW}terraform.tfvars 파일이 없습니다. 생성 중...${NC}"; \
 		cp terraform.tfvars.example $(TFVARS_FILE); \
 		echo "${GREEN}✓ terraform.tfvars 파일이 생성되었습니다${NC}"; \
-		echo "${YELLOW}⚠️  terraform/terraform.tfvars 파일을 편집하여 실제 값을 입력하세요${NC}"; \
+		echo "${YELLOW}terraform/terraform.tfvars 를 편집해 값을 입력하세요${NC}"; \
 		echo "   - cluster_name: 클러스터 이름"; \
 		echo "   - ec2_key_pair_name: 키 페어 이름 (빈 문자열로 설정하면 SSH 비활성화)"; \
 	else \
@@ -186,12 +186,12 @@ plan: setup validate ## Terraform 실행 계획 확인
 	@echo "${GREEN}✓ 실행 계획 확인이 완료되었습니다${NC}"
 	@echo "${YELLOW}계획을 검토한 후 'make deploy' 명령으로 배포하세요${NC}"
 
-deploy: ## EKS 클러스터 배포 (약 15분 소요, 과금 시작). AUTO_APPROVE=1 로 확인 생략
-	@echo "${RED}⚠️  AWS 리소스를 생성합니다. 과금이 시작됩니다.${NC}"
+deploy: ## EKS 클러스터 배포 (약 15분 소요). AUTO_APPROVE=1 로 확인 생략
+	@echo "${BLUE}AWS 리소스를 생성합니다${NC}"
 	@cd terraform && terraform plan -out=tfplan
 	@echo ""
 	@if [ "$(AUTO_APPROVE)" = "1" ]; then \
-		echo "${YELLOW}AUTO_APPROVE=1 이므로 확인 없이 진행합니다${NC}"; \
+		echo "${BLUE}확인 없이 진행합니다 (AUTO_APPROVE=1)${NC}"; \
 	else \
 		printf "${YELLOW}위 계획대로 배포합니다. 계속하려면 yes 를 입력하세요: ${NC}"; \
 		read ans; [ "$$ans" = "yes" ] || { echo "${RED}중단했습니다${NC}"; exit 1; }; \
@@ -247,7 +247,7 @@ status: ## 클러스터 상태 확인
 	@echo "${GREEN}=== 시스템 파드 ===${NC}"
 	@kubectl get pods -n kube-system 2>/dev/null || echo "${RED}시스템 파드 정보를 가져올 수 없습니다${NC}"
 
-test-app: ## 데모 앱 배포 (ClusterIP. LoadBalancer 과금 없음)
+test-app: ## 데모 앱 배포 (ClusterIP)
 	@kubectl apply -f k8s-manifests/demo-app.yaml
 	@kubectl rollout status deployment/demo-app --timeout=180s
 	@$(MAKE) app-status
@@ -271,7 +271,7 @@ clean-test-app: ## 데모 앱 삭제
 	@kubectl delete -f k8s-manifests/demo-app.yaml --ignore-not-found
 
 destroy: clean-test-app ## 모든 리소스 삭제
-	@echo "${RED}⚠️ 모든 AWS 리소스를 삭제합니다!${NC}"
+	@echo "${RED}모든 AWS 리소스를 삭제합니다${NC}"
 	@echo "${BLUE}LoadBalancer 서비스 확인 및 삭제 중...${NC}"
 	@kubectl get services --all-namespaces -o json | jq -r '.items[] | select(.spec.type=="LoadBalancer") | "\(.metadata.namespace) \(.metadata.name)"' | while read ns name; do kubectl delete service $$name -n $$ns 2>/dev/null || true; done
 	@echo "${BLUE}PersistentVolume 삭제 중...${NC}"
@@ -304,7 +304,7 @@ cost-note: ## 현재 구성의 대략적인 시간당 비용 표시
 	@echo "  t3.small SPOT x2       ~\$$0.014"
 	@echo "  NAT Gateway x1         ~\$$0.045"
 	@echo "  합계                   ~\$$0.16/시간"
-	@echo "${RED}검증이 끝나면 반드시 make destroy 를 실행하세요${NC}"
+	@echo "${YELLOW}검증이 끝나면 make destroy 로 정리하세요${NC}"
 
 versions: ## 사용 가능한 EKS 버전과 지원 상태 확인
 	@echo "${BLUE}EKS 클러스터 버전 목록${NC}"
@@ -366,9 +366,10 @@ rollback-nodegroup: ## 노드 그룹만 이전 버전으로 롤백 (VERSION=1.35
 
 rollback-cluster: ## 컨트롤 플레인을 이전 버전으로 롤백 (VERSION=1.35 필요)
 	@test -n "$(VERSION)" || { echo "${RED}VERSION 을 지정하세요. 예: make rollback-cluster VERSION=1.35${NC}"; exit 1; }
-	@echo "${RED}⚠️  컨트롤 플레인을 $(VERSION) 으로 롤백합니다. 노드 그룹을 먼저 롤백했는지 확인하세요.${NC}"
+	@echo "${BLUE}컨트롤 플레인을 $(VERSION) 으로 롤백합니다${NC}"
+	@echo "${YELLOW}노드 그룹을 먼저 롤백했는지 확인하세요${NC}"
 	@if [ "$(AUTO_APPROVE)" = "1" ]; then \
-		echo "${YELLOW}AUTO_APPROVE=1 이므로 확인 없이 진행합니다${NC}"; \
+		echo "${BLUE}확인 없이 진행합니다 (AUTO_APPROVE=1)${NC}"; \
 	else \
 		printf "${YELLOW}계속하려면 yes 를 입력하세요: ${NC}"; \
 		read ans; [ "$$ans" = "yes" ] || { echo "${RED}중단했습니다${NC}"; exit 1; }; \
