@@ -153,6 +153,7 @@ _deploy-all: setup
 	@$(MAKE) status
 	@$(MAKE) cluster-version
 	@$(MAKE) addons
+	@$(MAKE) insights
 	@$(MAKE) test-app
 	@echo "${BLUE}=== 완료 $$(date '+%Y-%m-%d %H:%M:%S') ===${NC}"
 	@echo "${YELLOW}다음: tfvars 의 kubernetes_version 을 1.36 으로 바꾸고 make upgrade${NC}"
@@ -268,9 +269,14 @@ addons: ## 애드온 버전 확인 (롤백 시 애드온은 되돌아가지 않�
 			--query 'addon.{name:addonName,version:addonVersion,status:status}' --output table; \
 	done
 
-insights: ## 롤백 가능 여부 인사이트 확인 (업그레이드 후 7일간만 표시)
+insights: ## 업그레이드·롤백 인사이트 확인 (애드온 호환성 검사 포함)
 	@CN=$$(cd terraform && terraform output -raw cluster_name 2>/dev/null || echo "$(CLUSTER_NAME)"); \
-	echo "${BLUE}ROLLBACK_READINESS 인사이트${NC}"; \
+	echo "${BLUE}UPGRADE_INSIGHTS (업그레이드 전 확인)${NC}"; \
+	aws eks list-insights --cluster-name $$CN \
+		--filter '{"categories": ["UPGRADE_READINESS"]}' \
+		--query 'insights[].{name:name,status:insightStatus.status,reason:insightStatus.reason}' \
+		--output table; \
+	echo "${BLUE}ROLLBACK_READINESS (업그레이드 후 7일간만 표시)${NC}"; \
 	aws eks list-insights --cluster-name $$CN \
 		--filter '{"categories": ["ROLLBACK_READINESS"]}' \
 		--query 'insights[].{name:name,status:insightStatus.status,reason:insightStatus.reason}' \
