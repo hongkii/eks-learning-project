@@ -65,3 +65,6 @@ logs/
 CLAUDE.md
 .claude/
 .mcp.json
+
+# 로컬 전용 Makefile 설정
+Makefile.local

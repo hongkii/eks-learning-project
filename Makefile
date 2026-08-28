@@ -12,11 +12,15 @@
 # =============================================================================
 
 .PHONY: help check-tools check-aws setup validate plan deploy kubeconfig status \
-        deploy-all _deploy-all upgrade _upgrade \
+        deploy-all _deploy-all upgrade _upgrade session \
         test-app app-status app-open app-watch monitor clean-test-app destroy clean log log-merge \
         cost-note versions cluster-version addons insights \
         rollback-nodegroup rollback-cluster rollback-a _rollback-a rollback-b _rollback-b \
         updates drift
+
+# 개인 설정은 Makefile.local 에 둔다. gitignore 대상이라 저장소에는 올라가지 않는다.
+# 예: AWS_PROFILE = my-profile
+-include Makefile.local
 
 # 기본 변수
 CLUSTER_NAME ?= my-study-eks
@@ -31,6 +35,11 @@ AUTO_APPROVE ?= 0
 
 # 모니터 스냅샷 간격(초).
 INTERVAL ?= 15
+
+# Makefile.local 에서 지정했으면 모든 하위 명령이 같은 프로파일을 쓴다.
+ifneq ($(strip $(AWS_PROFILE)),)
+export AWS_PROFILE
+endif
 
 # AWS CLI v2 는 기본으로 출력을 pager 에 넣는다. 빈 값이면 pager 를 쓰지 않는다.
 # https://docs.aws.amazon.com/cli/latest/userguide/cli-usage-pagination.html
@@ -131,6 +140,10 @@ check-tools: ## 필수 도구 설치 확인
 	@aws --version
 	@kubectl version --client=true --short 2>/dev/null || kubectl version --client
 
+session: ## MFA 세션 확보. 파이프 밖에서 먼저 실행해 코드 입력을 받는다
+	@echo "${BLUE}AWS 세션을 확인합니다$(if $(strip $(AWS_PROFILE)), (profile: $(AWS_PROFILE)),)...${NC}"
+	@aws sts get-caller-identity --query Arn --output text
+
 check-aws: ## AWS 계정 및 EKS API 호출 가능 여부 확인
 	@echo "${BLUE}AWS 계정 확인 중...${NC}"
 	@ARN=$$(aws sts get-caller-identity --query Arn --output text 2>/dev/null) || \
@@ -189,7 +202,7 @@ deploy: ## EKS 클러스터 배포 (약 15분 소요, 과금 시작). AUTO_APPRO
 	@$(MAKE) kubeconfig
 	@$(MAKE) cost-note
 
-deploy-all: ## 배포부터 데모 앱까지 한 번에. 확인 프롬프트 없이 logs/ 에 기록하며 실행
+deploy-all: session ## 배포부터 데모 앱까지 한 번에. 확인 프롬프트 없이 logs/ 에 기록하며 실행
 	@$(MAKE) log T="_deploy-all AUTO_APPROVE=1" N=deploy
 
 _deploy-all: setup
@@ -203,7 +216,7 @@ _deploy-all: setup
 	@echo "${BLUE}=== 완료 $$(date '+%Y-%m-%d %H:%M:%S') ===${NC}"
 	@echo "${YELLOW}다음: tfvars 의 kubernetes_version 을 1.36 으로 바꾸고 make upgrade${NC}"
 
-upgrade: ## tfvars 변경 후 업그레이드. 모니터를 돌리며 logs/ 에 기록
+upgrade: session ## tfvars 변경 후 업그레이드. 모니터를 돌리며 logs/ 에 기록
 	@$(MAKE) log T="_upgrade AUTO_APPROVE=1" N=upgrade MONITOR=1
 
 _upgrade:
@@ -218,8 +231,9 @@ kubeconfig: ## kubectl 설정 업데이트
 	@echo "${BLUE}kubectl 설정을 업데이트합니다...${NC}"
 	@CLUSTER_NAME=$$(cd terraform && terraform output -raw cluster_name 2>/dev/null || echo "$(CLUSTER_NAME)"); \
 	AWS_REGION=$$(cd terraform && terraform output -raw cluster_region 2>/dev/null || echo "$(AWS_REGION)"); \
-	aws eks update-kubeconfig --region $$AWS_REGION --name $$CLUSTER_NAME
-	@echo "${GREEN}✓ kubectl 설정이 업데이트되었습니다${NC}"
+	aws eks update-kubeconfig --region $$AWS_REGION --name $$CLUSTER_NAME --alias $$CLUSTER_NAME
+	@echo "${GREEN}✓ kubectl 컨텍스트: $$(kubectl config current-context)${NC}"
+	@command -v kubectx >/dev/null 2>&1 && kubectx | sed 's|^|  |' || true
 
 status: ## 클러스터 상태 확인
 	@echo "${BLUE}클러스터 상태를 확인합니다...${NC}"
@@ -373,7 +387,7 @@ rollback-cluster: ## 컨트롤 플레인을 이전 버전으로 롤백 (VERSION=
 	@echo "${BLUE}=== 컨트롤 플레인 롤백 종료 $$(date '+%Y-%m-%d %H:%M:%S') ===${NC}"
 	@echo "${YELLOW}위 type 이 VersionRollback 이면 롤백으로 처리된 것입니다${NC}"
 
-rollback-a: ## 패턴 A 롤백을 한 번에 (노드 그룹 → 컨트롤 플레인). VERSION 필요
+rollback-a: session ## 패턴 A 롤백을 한 번에 (노드 그룹 → 컨트롤 플레인). VERSION 필요
 	@test -n "$(VERSION)" || { echo "${RED}VERSION 을 지정하세요. 예: make rollback-a VERSION=1.35${NC}"; exit 1; }
 	@$(MAKE) log T="_rollback-a VERSION=$(VERSION) AUTO_APPROVE=1" N=rollback-a MONITOR=1
 
@@ -386,7 +400,7 @@ _rollback-a:
 	@$(MAKE) updates
 	@$(MAKE) drift
 
-rollback-b: ## 패턴 B 롤백을 한 번에 (컨트롤 플레인만). VERSION 필요
+rollback-b: session ## 패턴 B 롤백을 한 번에 (컨트롤 플레인만). VERSION 필요
 	@test -n "$(VERSION)" || { echo "${RED}VERSION 을 지정하세요. 예: make rollback-b VERSION=1.35${NC}"; exit 1; }
 	@$(MAKE) log T="_rollback-b VERSION=$(VERSION) AUTO_APPROVE=1" N=rollback-b MONITOR=1
 
