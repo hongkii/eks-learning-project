@@ -42,14 +42,26 @@ spec:
               valueFrom:
                 fieldRef:
                   fieldPath: spec.nodeName
+            - name: POD_IP
+              valueFrom:
+                fieldRef:
+                  fieldPath: status.podIP
           command: ["/bin/sh", "-c"]
           args:
             - |
+              # STARTED_AT changes only when the pod is recreated. It stays the same
+              # through a control plane rollback and changes through a node rollback.
+              STARTED_AT=$(date -u '+%Y-%m-%d %H:%M:%S UTC')
               cat > /usr/share/nginx/html/index.html <<EOF
-              <html><body style="font-family:monospace">
+              <html><head><meta http-equiv="refresh" content="2"></head>
+              <body style="font-family:monospace;font-size:16px">
               <h1>EKS version rollback check</h1>
-              <p>pod : $POD_NAME</p>
-              <p>node: $NODE_NAME</p>
+              <table cellpadding="4">
+              <tr><td>pod</td><td>$POD_NAME</td></tr>
+              <tr><td>node</td><td>$NODE_NAME</td></tr>
+              <tr><td>pod IP</td><td>$POD_IP</td></tr>
+              <tr><td>started at</td><td>$STARTED_AT</td></tr>
+              </table>
               </body></html>
               EOF
               exec nginx -g 'daemon off;'
