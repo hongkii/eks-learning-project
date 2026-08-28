@@ -13,7 +13,7 @@
 
 .PHONY: help check-tools check-aws setup validate plan deploy kubeconfig status \
         deploy-all _deploy-all upgrade _upgrade \
-        test-app app-status app-open app-watch clean-test-app destroy clean log \
+        test-app app-status app-open app-watch clean-test-app destroy clean log log-merge \
         cost-note versions cluster-version addons insights \
         rollback-nodegroup rollback-cluster rollback-a _rollback-a rollback-b _rollback-b \
         updates drift
@@ -60,6 +60,7 @@ help: ## 사용 가능한 명령어 표시
 	@echo ""
 	@echo "${GREEN}옵션:${NC}"
 	@echo "  make log T=insights        - 임의 타깃을 logs/ 에 기록하며 실행"
+	@echo "  make log-merge             - 로그를 실행 시각 순으로 하나로 합침"
 	@echo "  make deploy AUTO_APPROVE=1 - yes 확인 생략"
 	@echo "  ${YELLOW}롤백 관찰용으로 다른 터미널에서 make app-watch 를 띄워두세요${NC}"
 	@echo ""
@@ -82,6 +83,27 @@ log: ## 임의의 타깃을 logs/ 에 기록하며 실행. 예: make log T=insig
 	perl -pi -e 's/\x1b\[[0-9;]*[a-zA-Z]//g; s/\r$$//' $$LOG; \
 	echo "${GREEN}로그: $$LOG${NC}"; \
 	exit $$RC
+
+log-merge: ## logs/ 의 로그를 실행 시각 순으로 하나의 파일로 합침
+	@ls -1 $(LOG_DIR)/*.log >/dev/null 2>&1 || { echo "${RED}$(LOG_DIR) 에 로그가 없습니다${NC}"; exit 1; }
+	@OUT=$(LOG_DIR)/merged-$$(date '+%Y%m%d-%H%M%S').txt; \
+	{ \
+		echo "EKS version rollback verification"; \
+		echo "merged at $$(date '+%Y-%m-%d %H:%M:%S %z')"; \
+	} > $$OUT; \
+	for f in $$(ls -1tr $(LOG_DIR)/*.log); do \
+		{ \
+			echo ""; \
+			echo "================================================================"; \
+			echo "== $$(basename $$f)"; \
+			echo "================================================================"; \
+			echo ""; \
+		} >> $$OUT; \
+		cat "$$f" >> $$OUT; \
+	done; \
+	echo "${GREEN}합친 파일: $$OUT${NC}"; \
+	echo "${BLUE}포함된 로그:${NC}"; \
+	ls -1tr $(LOG_DIR)/*.log | sed 's|^|  |'
 
 check-tools: ## 필수 도구 설치 확인
 	@echo "${BLUE}필수 도구 설치 확인 중...${NC}"

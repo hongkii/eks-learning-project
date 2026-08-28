@@ -49,8 +49,10 @@ in order and prints a timestamp at both ends. `deploy` asks for a `yes` confirma
 applying; pass `AUTO_APPROVE=1` to skip it.
 
 `make log T=<target>` runs any target, tees the output to `logs/<target>-<timestamp>.log`
-and strips the ANSI colors from the file. `logs/` is gitignored because the output contains
-the account ID and resource identifiers.
+and strips the ANSI colors from the file. Terraform is called with `-no-color` so the file
+stays plain text. `make log-merge` concatenates every log into one file in execution order.
+
+`logs/` is gitignored because the output contains the account ID and resource identifiers.
 
 Settings live in `terraform/terraform.tfvars`, which is gitignored.
 
