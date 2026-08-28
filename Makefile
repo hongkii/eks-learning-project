@@ -21,6 +21,10 @@ CLUSTER_NAME ?= my-study-eks
 AWS_REGION ?= ap-northeast-1
 TFVARS_FILE = terraform/terraform.tfvars
 
+# AWS CLI v2 는 기본으로 출력을 pager 에 넣는다. 빈 값이면 pager 를 쓰지 않는다.
+# https://docs.aws.amazon.com/cli/latest/userguide/cli-usage-pagination.html
+export AWS_PAGER :=
+
 # 색상 코드
 RED = \033[0;31m
 GREEN = \033[0;32m
@@ -66,9 +70,9 @@ check-tools: ## 필수 도구 설치 확인
 
 check-aws: ## AWS 계정 및 권한 확인
 	@echo "${BLUE}AWS 계정 확인 중...${NC}"
-	@aws sts get-caller-identity >/dev/null 2>&1 || { echo "${RED}Error: AWS 자격 증명이 설정되지 않았습니다. 'aws configure' 명령을 실행하세요${NC}"; exit 1; }
-	@echo "${GREEN}✓ AWS 계정 확인됨${NC}"
-	@aws sts get-caller-identity
+	@ARN=$$(aws sts get-caller-identity --query Arn --output text 2>/dev/null) || \
+		{ echo "${RED}Error: AWS 자격 증명이 설정되지 않았습니다. 'aws configure' 명령을 실행하세요${NC}"; exit 1; }; \
+	echo "${GREEN}✓ AWS 계정 확인됨: $$ARN${NC}"
 
 setup: check-tools check-aws ## 초기 설정 (terraform.tfvars 파일 생성)
 	@echo "${BLUE}초기 설정을 시작합니다...${NC}"

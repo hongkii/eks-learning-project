@@ -32,6 +32,11 @@ export AWS_PROFILE=cm-yim.hongki
 aws sts get-caller-identity
 ```
 
+The Makefile sets `AWS_PAGER` to empty so AWS CLI v2 does not send output to a pager.
+To get the same behavior outside the Makefile, add `cli_pager=` to the profile in `~/.aws/config`.
+
+If the profile requires MFA, the AWS CLI prompts for a code on the first call of a session.
+
 ## Deploy
 
 ```bash
