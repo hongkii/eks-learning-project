@@ -22,9 +22,15 @@ variable "cluster_name" {
 }
 
 variable "kubernetes_version" {
-  description = "Kubernetes version. Extended support versions incur an additional charge"
+  description = "Kubernetes version of the control plane. Extended support versions incur an additional charge"
   type        = string
-  default     = "1.34"
+  default     = "1.35"
+}
+
+variable "node_group_kubernetes_version" {
+  description = "Kubernetes version of the node group. Null follows kubernetes_version. Pin it to N-1 to keep a bake period after upgrading the control plane"
+  type        = string
+  default     = null
 }
 
 variable "vpc_cidr" {

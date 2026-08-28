@@ -10,7 +10,11 @@ cluster_name = "my-study-eks"
 
 # Standard support version. Extended support versions incur an additional charge.
 # https://docs.aws.amazon.com/eks/latest/userguide/kubernetes-versions.html
-kubernetes_version = "1.34"
+kubernetes_version = "1.35"
+
+# Node group version. Commented out means it follows kubernetes_version.
+# Pin it to N-1 to upgrade the control plane first and keep a bake period.
+# node_group_kubernetes_version = "1.35"
 
 # Network
 vpc_cidr = "10.0.0.0/16"

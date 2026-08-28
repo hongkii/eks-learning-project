@@ -58,10 +58,12 @@ resource "aws_eks_node_group" "main" {
 
   subnet_ids = aws_subnet.private[*].id
 
-  # Managed node groups are not rolled back with the control plane.
-  # They must be rolled back first via UpdateNodegroupVersion.
-  # https://docs.aws.amazon.com/eks/latest/userguide/rollback-cluster.html
-  version = var.kubernetes_version
+  # Kept separate from the cluster version so the control plane can be upgraded
+  # first and the nodes left on N-1 during the bake period. While the nodes stay
+  # on N-1 the kubelet version skew insight stays PASSING, so a rollback does not
+  # need the node group to be rolled back first.
+  # https://docs.aws.amazon.com/eks/latest/best-practices/rollback-cluster-upgrades.html
+  version = coalesce(var.node_group_kubernetes_version, var.kubernetes_version)
 
   # AL2 is no longer supported from Kubernetes 1.33.
   # https://docs.aws.amazon.com/eks/latest/userguide/eks-optimized-ami.html
