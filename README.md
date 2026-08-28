@@ -28,7 +28,7 @@ terraform version   # >= 1.13
 aws --version       # >= 2.12.3
 kubectl version --client
 
-export AWS_PROFILE=cm-yim.hongki
+export AWS_PROFILE=<your-profile>
 aws sts get-caller-identity
 ```
 
