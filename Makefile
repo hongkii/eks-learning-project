@@ -15,6 +15,7 @@
         deploy-all _deploy-all upgrade _upgrade session \
         test-app app-status app-open app-watch monitor probe clean-test-app destroy clean log log-merge \
         cost-note versions cluster-version addons insights \
+        addon-snapshot addon-upgrade addon-restore \
         rollback-nodegroup rollback-cluster wait-nodegroup rollback-rest _rollback-rest \
         rollback-a _rollback-a rollback-b _rollback-b \
         updates drift
@@ -30,6 +31,8 @@ TFVARS_FILE = terraform/terraform.tfvars
 LOG_DIR = logs
 # 실행할 때마다 덮어쓴다. 확장자가 .log 가 아니라서 합칠 대상에는 포함되지 않는다.
 MERGED = $(LOG_DIR)/merged.txt
+# 애드온을 올리기 전 버전을 적어두고, 롤백 전에 이 값으로 되돌린다.
+ADDON_SNAPSHOT = $(LOG_DIR)/addon-versions.txt
 
 # 1 이면 배포와 롤백의 yes 확인을 건너뛴다. 기본은 확인을 받는다.
 AUTO_APPROVE ?= 0
@@ -72,6 +75,11 @@ help: ## 사용 가능한 명령어 표시
 	@echo "  1. tfvars 에 node_group_kubernetes_version = \"1.35\" 추가"
 	@echo "  2. make upgrade                - 컨트롤 플레인만 1.36 으로"
 	@echo "  3. make rollback-b VERSION=1.35 - 컨트롤 플레인만 되돌리고 drift 까지"
+	@echo ""
+	@echo "${GREEN}애드온 경로 검증 (업그레이드 후, 롤백 전):${NC}"
+	@echo "  make addon-upgrade   - 애드온을 현재 클러스터 버전의 기본 버전으로"
+	@echo "  make insights        - 롤백 인사이트가 애드온을 지적하는지 확인"
+	@echo "  make addon-restore   - 업그레이드 전 버전으로 되돌림"
 	@echo ""
 	@echo "${GREEN}옵션:${NC}"
 	@echo "  make log T=insights        - 임의 타깃을 logs/ 에 기록하며 실행"
@@ -234,6 +242,7 @@ upgrade: session ## tfvars 변경 후 업그레이드. 모니터를 돌리며 lo
 
 _upgrade:
 	@echo "${BLUE}=== 업그레이드 시작 $$(date '+%Y-%m-%d %H:%M:%S') ===${NC}"
+	@$(MAKE) addon-snapshot
 	@$(MAKE) deploy
 	@$(MAKE) cluster-version
 	@$(MAKE) addons
@@ -370,6 +379,41 @@ addons: ## 애드온 버전 확인 (롤백 시 애드온은 되돌아가지 않�
 		aws eks describe-addon --cluster-name $$CN --addon-name $$A \
 			--query 'addon.{name:addonName,version:addonVersion,status:status}' --output table; \
 	done
+
+addon-snapshot: ## 현재 애드온 버전을 파일에 저장 (롤백용 기준값)
+	@mkdir -p $(LOG_DIR)
+	@CN=$$(cd terraform && terraform output -raw cluster_name 2>/dev/null || echo "$(CLUSTER_NAME)"); \
+	: > $(ADDON_SNAPSHOT); \
+	for A in $$(aws eks list-addons --cluster-name $$CN --query 'addons[]' --output text); do \
+		V=$$(aws eks describe-addon --cluster-name $$CN --addon-name $$A \
+			--query 'addon.addonVersion' --output text); \
+		echo "$$A $$V" >> $(ADDON_SNAPSHOT); \
+	done
+	@echo "${BLUE}저장한 애드온 버전:${NC}"
+	@sed 's|^|  |' $(ADDON_SNAPSHOT)
+
+addon-upgrade: ## 애드온을 현재 클러스터 버전의 기본 버전으로 올림
+	@CN=$$(cd terraform && terraform output -raw cluster_name 2>/dev/null || echo "$(CLUSTER_NAME)"); \
+	for A in $$(aws eks list-addons --cluster-name $$CN --query 'addons[]' --output text); do \
+		echo "${BLUE}$$(date '+%H:%M:%S') $$A 을 기본 버전으로 갱신${NC}"; \
+		aws eks update-addon --cluster-name $$CN --addon-name $$A \
+			--resolve-conflicts OVERWRITE --query 'update.[id,status]' --output text || exit 1; \
+		aws eks wait addon-active --cluster-name $$CN --addon-name $$A || exit 1; \
+		aws eks describe-addon --cluster-name $$CN --addon-name $$A \
+			--query 'addon.[addonName,addonVersion,status]' --output text; \
+	done
+
+addon-restore: ## addon-snapshot 에 저장한 버전으로 애드온을 되돌림
+	@test -s $(ADDON_SNAPSHOT) || { echo "${RED}$(ADDON_SNAPSHOT) 이 없습니다. make addon-snapshot 을 먼저 실행하세요${NC}"; exit 1; }
+	@CN=$$(cd terraform && terraform output -raw cluster_name 2>/dev/null || echo "$(CLUSTER_NAME)"); \
+	while read -r A V; do \
+		[ -n "$$A" ] || continue; \
+		echo "${BLUE}$$(date '+%H:%M:%S') $$A 을 $$V 로 되돌림${NC}"; \
+		aws eks update-addon --cluster-name $$CN --addon-name $$A --addon-version $$V \
+			--resolve-conflicts OVERWRITE --query 'update.[id,status]' --output text || exit 1; \
+		aws eks wait addon-active --cluster-name $$CN --addon-name $$A || exit 1; \
+	done < $(ADDON_SNAPSHOT)
+	@$(MAKE) addons
 
 insights: ## 업그레이드·롤백 인사이트 확인 (애드온 호환성 검사 포함)
 	@CN=$$(cd terraform && terraform output -raw cluster_name 2>/dev/null || echo "$(CLUSTER_NAME)"); \
