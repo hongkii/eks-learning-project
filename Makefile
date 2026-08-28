@@ -42,11 +42,11 @@ help: ## 사용 가능한 명령어 표시
 	@echo ""
 	@echo "${GREEN}버전 롤백 검증 순서:${NC}"
 	@echo "  1. make versions                        - 지원 버전 확인"
-	@echo "  2. tfvars 의 kubernetes_version 을 1.35 로 변경"
-	@echo "  3. make deploy                          - 1.34 → 1.35 업그레이드"
+	@echo "  2. tfvars 의 kubernetes_version 을 1.36 으로 변경"
+	@echo "  3. make deploy                          - 1.35 → 1.36 업그레이드"
 	@echo "  4. make insights                        - 롤백 가능 여부 확인"
-	@echo "  5. make rollback-nodegroup VERSION=1.34 - 노드 그룹 먼저"
-	@echo "  6. make rollback-cluster VERSION=1.34   - 컨트롤 플레인"
+	@echo "  5. make rollback-nodegroup VERSION=1.35 - 노드 그룹 먼저 (패턴 A 만)"
+	@echo "  6. make rollback-cluster VERSION=1.35   - 컨트롤 플레인"
 	@echo "  7. make updates                         - 진행 상태 확인"
 	@echo "  8. make drift                           - Terraform 차이 확인"
 	@echo ""
@@ -164,8 +164,15 @@ destroy: clean-test-app ## 모든 리소스 삭제
 # =============================================================================
 # 버전 롤백 검증용 타깃
 # =============================================================================
-# 시나리오: 1.34 로 생성 → 1.35 로 업그레이드 → 1.34 로 롤백
+# 시나리오: 1.35 로 생성 → 1.36 으로 업그레이드 → 1.35 로 롤백
 # 주의: 생성 당시 버전으로는 롤백할 수 없다. 반드시 업그레이드를 거쳐야 한다.
+#
+# 패턴 A: kubernetes_version 만 바꿔 컨트롤 플레인과 노드를 함께 올린다.
+#         롤백할 때 노드 그룹을 먼저 되돌려야 한다.
+# 패턴 B: node_group_kubernetes_version 을 1.35 로 고정한 뒤 kubernetes_version 만
+#         1.36 으로 올린다. 노드가 N-1 에 머물러 kubelet skew 인사이트가 PASSING 이라
+#         롤백은 컨트롤 플레인만 되돌리면 된다. AWS 권장 방식.
+# https://docs.aws.amazon.com/eks/latest/best-practices/rollback-cluster-upgrades.html
 # =============================================================================
 
 cost-note: ## 현재 구성의 대략적인 시간당 비용 표시
@@ -200,8 +207,8 @@ insights: ## 롤백 가능 여부 인사이트 확인 (업그레이드 후 7일�
 		--query 'insights[].{name:name,status:insightStatus.status,reason:insightStatus.reason}' \
 		--output table
 
-rollback-nodegroup: ## 노드 그룹만 이전 버전으로 롤백 (VERSION=1.34 필요)
-	@test -n "$(VERSION)" || { echo "${RED}VERSION 을 지정하세요. 예: make rollback-nodegroup VERSION=1.34${NC}"; exit 1; }
+rollback-nodegroup: ## 노드 그룹만 이전 버전으로 롤백 (VERSION=1.35 필요)
+	@test -n "$(VERSION)" || { echo "${RED}VERSION 을 지정하세요. 예: make rollback-nodegroup VERSION=1.35${NC}"; exit 1; }
 	@CN=$$(cd terraform && terraform output -raw cluster_name 2>/dev/null || echo "$(CLUSTER_NAME)"); \
 	for NG in $$(aws eks list-nodegroups --cluster-name $$CN --query 'nodegroups[]' --output text); do \
 		echo "${BLUE}$$NG 를 $(VERSION) 으로 롤백${NC}"; \
@@ -209,8 +216,8 @@ rollback-nodegroup: ## 노드 그룹만 이전 버전으로 롤백 (VERSION=1.34
 			--kubernetes-version $(VERSION); \
 	done
 
-rollback-cluster: ## 컨트롤 플레인을 이전 버전으로 롤백 (VERSION=1.34 필요)
-	@test -n "$(VERSION)" || { echo "${RED}VERSION 을 지정하세요. 예: make rollback-cluster VERSION=1.34${NC}"; exit 1; }
+rollback-cluster: ## 컨트롤 플레인을 이전 버전으로 롤백 (VERSION=1.35 필요)
+	@test -n "$(VERSION)" || { echo "${RED}VERSION 을 지정하세요. 예: make rollback-cluster VERSION=1.35${NC}"; exit 1; }
 	@echo "${RED}⚠️  컨트롤 플레인을 $(VERSION) 으로 롤백합니다. 노드 그룹을 먼저 롤백했는지 확인하세요.${NC}"
 	@printf "${YELLOW}계속하려면 yes 를 입력하세요: ${NC}"; \
 	read ans; [ "$$ans" = "yes" ] || { echo "${RED}중단했습니다${NC}"; exit 1; }

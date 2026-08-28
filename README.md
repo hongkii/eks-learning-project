@@ -12,7 +12,7 @@ VPC (10.0.0.0/16)
 
 | Item | Value |
 | --- | --- |
-| Kubernetes | 1.34 (standard support) |
+| Kubernetes | 1.35 (standard support) |
 | AMI | AL2023_x86_64_STANDARD |
 | Instances | t3.small SPOT x2 |
 | Add-ons | vpc-cni, kube-proxy, coredns, aws-ebs-csi-driver |
@@ -57,23 +57,40 @@ make app-watch    # watch pod status during a rollback
 ## Version Rollback Verification
 
 EKS allows rolling back to the previous minor version within 7 days of an in-place upgrade.
-A cluster cannot be rolled back to the version it was created at, so create at 1.34, upgrade to 1.35, then roll back.
+A cluster cannot be rolled back to the version it was created at, so create at 1.35, upgrade to 1.36, then roll back.
 
-<https://docs.aws.amazon.com/eks/latest/userguide/rollback-cluster.html>
+- <https://docs.aws.amazon.com/eks/latest/userguide/rollback-cluster.html>
+- <https://docs.aws.amazon.com/eks/latest/best-practices/rollback-cluster-upgrades.html>
+
+Two upgrade patterns lead to two different rollback paths.
+
+**Pattern A: upgrade the control plane and the nodes together.**
+Change `kubernetes_version` only. The node group follows it, so the node group has to be
+rolled back before the control plane.
 
 ```bash
 make versions                            # check support status per version
-# change kubernetes_version to 1.35 in terraform.tfvars
-make deploy                              # 1.34 to 1.35
+# set kubernetes_version = "1.36" in terraform.tfvars
+make deploy                              # 1.35 to 1.36, control plane and nodes
 make insights                            # check ROLLBACK_READINESS
-make rollback-nodegroup VERSION=1.34     # node group first
-make rollback-cluster VERSION=1.34       # control plane
+make rollback-nodegroup VERSION=1.35     # node group first
+make rollback-cluster VERSION=1.35       # control plane
 make updates                             # confirm the type is VersionRollback
 make drift                               # check the difference against Terraform
 ```
 
-Managed node groups are not rolled back automatically. They must be rolled back before the control plane.
-Add-ons are not rolled back either, so they need to be handled separately.
+**Pattern B: upgrade the control plane first and bake.** This is what AWS recommends.
+Pin `node_group_kubernetes_version` so the nodes stay on N-1. The kubelet version skew
+insight stays PASSING, and the rollback only touches the control plane.
+
+```bash
+# set kubernetes_version = "1.36" and node_group_kubernetes_version = "1.35"
+make deploy                              # control plane only
+make insights
+make rollback-cluster VERSION=1.35       # no node group rollback needed
+```
+
+Add-ons are not rolled back in either pattern, so they need to be handled separately.
 
 The Terraform AWS Provider does not support rollback yet. After rolling back with the CLI,
 align `kubernetes_version` in the code with the actual version.
