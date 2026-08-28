@@ -29,10 +29,13 @@ CLUSTER_NAME ?= my-study-eks
 AWS_REGION ?= ap-northeast-1
 TFVARS_FILE = terraform/terraform.tfvars
 LOG_DIR = logs
+# 실행한 날짜별로 나눈다. RUN_DATE 를 넘기면 과거 폴더를 다룰 수 있다.
+RUN_DATE ?= $(shell date +%Y%m%d)
+RUN_DIR = $(LOG_DIR)/$(RUN_DATE)
 # 실행할 때마다 덮어쓴다. 확장자가 .log 가 아니라서 합칠 대상에는 포함되지 않는다.
-MERGED = $(LOG_DIR)/merged.txt
+MERGED = $(RUN_DIR)/merged.txt
 # 애드온을 올리기 전 버전을 적어두고, 롤백 전에 이 값으로 되돌린다.
-ADDON_SNAPSHOT = $(LOG_DIR)/addon-versions.txt
+ADDON_SNAPSHOT = $(RUN_DIR)/addon-versions.txt
 
 # 1 이면 배포와 롤백의 yes 확인을 건너뛴다. 기본은 확인을 받는다.
 AUTO_APPROVE ?= 0
@@ -76,10 +79,9 @@ help: ## 사용 가능한 명령어 표시
 	@echo "  2. make upgrade                - 컨트롤 플레인만 1.36 으로"
 	@echo "  3. make rollback-b VERSION=1.35 - 컨트롤 플레인만 되돌리고 drift 까지"
 	@echo ""
-	@echo "${GREEN}애드온 경로 검증 (업그레이드 후, 롤백 전):${NC}"
-	@echo "  make addon-upgrade   - 애드온을 현재 클러스터 버전의 기본 버전으로"
-	@echo "  make insights        - 롤백 인사이트가 애드온을 지적하는지 확인"
-	@echo "  make addon-restore   - 업그레이드 전 버전으로 되돌림"
+	@echo "${GREEN}애드온은 upgrade / rollback 에 포함되어 있습니다:${NC}"
+	@echo "  upgrade    클러스터 갱신 후 애드온도 기본 버전으로 올림"
+	@echo "  rollback   노드 그룹 -> 애드온 복원 -> 컨트롤 플레인 순으로 되돌림"
 	@echo ""
 	@echo "${GREEN}옵션:${NC}"
 	@echo "  make log T=insights        - 임의 타깃을 logs/ 에 기록하며 실행"
@@ -91,11 +93,11 @@ help: ## 사용 가능한 명령어 표시
 
 log: ## 임의의 타깃을 logs/ 에 기록하며 실행. 예: make log T=insights
 	@test -n "$(T)" || { echo "${RED}T 를 지정하세요. 예: make log T=insights${NC}"; exit 1; }
-	@mkdir -p $(LOG_DIR)
+	@mkdir -p $(RUN_DIR)
 	@NAME="$(N)"; \
 	[ -n "$$NAME" ] || NAME=$$(echo "$(T)" | tr ' =/' '---'); \
 	STAMP=$$(date '+%Y%m%d-%H%M%S'); \
-	LOG=$(LOG_DIR)/$$NAME-$$STAMP.log; \
+	LOG=$(RUN_DIR)/$$NAME-$$STAMP.log; \
 	export TF_CLI_ARGS_init=-no-color TF_CLI_ARGS_validate=-no-color \
 	       TF_CLI_ARGS_plan=-no-color TF_CLI_ARGS_apply=-no-color TF_CLI_ARGS_destroy=-no-color; \
 	if [ -n "$$AWS_PROFILE" ]; then \
@@ -107,7 +109,7 @@ log: ## 임의의 타깃을 logs/ 에 기록하며 실행. 예: make log T=insig
 	set -o pipefail; \
 	if [ "$(MONITOR)" = "1" ]; then \
 		CN=$$(cd terraform && terraform output -raw cluster_name 2>/dev/null || echo "$(CLUSTER_NAME)"); \
-		MON=$(LOG_DIR)/$$NAME-monitor-$$STAMP.log; \
+		MON=$(RUN_DIR)/$$NAME-monitor-$$STAMP.log; \
 		CLUSTER=$$CN INTERVAL=$(INTERVAL) ./scripts/monitor.sh > $$MON 2>&1 & \
 		MPID=$$!; \
 		trap 'kill '"$$MPID"' 2>/dev/null' EXIT INT TERM; \
@@ -123,13 +125,13 @@ log: ## 임의의 타깃을 logs/ 에 기록하며 실행. 예: make log T=insig
 	echo "${GREEN}합본: $(MERGED)${NC}"; \
 	exit $$RC
 
-log-merge: ## logs/ 의 로그를 실행 시각 순으로 merged.txt 하나에 합침
-	@ls -1 $(LOG_DIR)/*.log >/dev/null 2>&1 || { echo "${RED}$(LOG_DIR) 에 로그가 없습니다${NC}"; exit 1; }
+log-merge: ## 그날 폴더의 로그를 실행 시각 순으로 merged.txt 하나에 합침. RUN_DATE 로 과거 지정 가능
+	@ls -1 $(RUN_DIR)/*.log >/dev/null 2>&1 || { echo "${RED}$(RUN_DIR) 에 로그가 없습니다${NC}"; exit 1; }
 	@{ \
 		echo "EKS version rollback verification"; \
 		echo "merged at $$(date '+%Y-%m-%d %H:%M:%S %z')"; \
 	} > $(MERGED); \
-	for f in $$(ls -1tr $(LOG_DIR)/*.log); do \
+	for f in $$(ls -1tr $(RUN_DIR)/*.log); do \
 		{ \
 			echo ""; \
 			echo "================================================================"; \
@@ -140,7 +142,7 @@ log-merge: ## logs/ 의 로그를 실행 시각 순으로 merged.txt 하나에 �
 		cat "$$f" >> $(MERGED); \
 	done
 	@echo "${BLUE}포함된 로그:${NC}"
-	@ls -1tr $(LOG_DIR)/*.log | sed 's|^|  |'
+	@ls -1tr $(RUN_DIR)/*.log | sed 's|^|  |'
 	@echo "${GREEN}합본: $(MERGED)${NC}"
 
 check-tools: ## 필수 도구 설치 확인
@@ -244,6 +246,7 @@ _upgrade:
 	@echo "${BLUE}=== 업그레이드 시작 $$(date '+%Y-%m-%d %H:%M:%S') ===${NC}"
 	@$(MAKE) addon-snapshot
 	@$(MAKE) deploy
+	@$(MAKE) addon-upgrade
 	@$(MAKE) cluster-version
 	@$(MAKE) addons
 	@$(MAKE) insights
@@ -281,8 +284,8 @@ app-status: ## 데모 앱의 파드가 어느 노드에서 도는지 확인
 app-open: ## 데모 앱을 로컬 8080 포트로 연결. 끊기면 다시 연결한다
 	@echo "${BLUE}http://localhost:8080 에서 확인하세요. 종료는 Ctrl+C${NC}"
 	@# port-forward 는 특정 파드에 붙으므로 노드 교체로 파드가 죽으면 종료된다.
-	@LOG=$(LOG_DIR)/app-open-$$(date '+%Y%m%d-%H%M%S').log; \
-	mkdir -p $(LOG_DIR); \
+	@LOG=$(RUN_DIR)/app-open-$$(date '+%Y%m%d-%H%M%S').log; \
+	mkdir -p $(RUN_DIR); \
 	while :; do \
 		kubectl port-forward svc/demo-app 8080:80 2>&1 \
 			| while IFS= read -r l; do \
@@ -293,8 +296,8 @@ app-open: ## 데모 앱을 로컬 8080 포트로 연결. 끊기면 다시 연결
 	done
 
 probe: ## Service 의 Ready 엔드포인트 수를 1초마다 기록 (Ctrl+C 로 종료)
-	@mkdir -p $(LOG_DIR)
-	@LOG=$(LOG_DIR)/probe-$$(date '+%Y%m%d-%H%M%S').log; \
+	@mkdir -p $(RUN_DIR)
+	@LOG=$(RUN_DIR)/probe-$$(date '+%Y%m%d-%H%M%S').log; \
 	echo "${BLUE}엔드포인트를 감시합니다. 종료는 Ctrl+C -> $$LOG${NC}"; \
 	./scripts/probe.sh 2>&1 | while IFS= read -r l; do printf '%s\n' "$$l" | tee -a $$LOG; done
 
@@ -303,8 +306,8 @@ monitor: ## 클러스터·노드·애드온·파드 상태를 주기적으로 �
 	CLUSTER=$$CN INTERVAL=$(INTERVAL) ./scripts/monitor.sh
 
 app-watch: ## 롤백 중 파드 상태를 실시간 관찰. 화면과 logs/ 에 같이 남는다
-	@mkdir -p $(LOG_DIR)
-	@LOG=$(LOG_DIR)/app-watch-$$(date '+%Y%m%d-%H%M%S').log; \
+	@mkdir -p $(RUN_DIR)
+	@LOG=$(RUN_DIR)/app-watch-$$(date '+%Y%m%d-%H%M%S').log; \
 	echo "${BLUE}파드 상태를 관찰합니다. 종료는 Ctrl+C -> $$LOG${NC}"; \
 	while :; do \
 		kubectl get pods -l app=demo-app -o wide --watch 2>&1 \
@@ -381,7 +384,7 @@ addons: ## 애드온 버전 확인 (롤백 시 애드온은 되돌아가지 않�
 	done
 
 addon-snapshot: ## 현재 애드온 버전을 파일에 저장 (롤백용 기준값)
-	@mkdir -p $(LOG_DIR)
+	@mkdir -p $(RUN_DIR)
 	@CN=$$(cd terraform && terraform output -raw cluster_name 2>/dev/null || echo "$(CLUSTER_NAME)"); \
 	: > $(ADDON_SNAPSHOT); \
 	for A in $$(aws eks list-addons --cluster-name $$CN --query 'addons[]' --output text); do \
@@ -404,7 +407,7 @@ addon-upgrade: ## 애드온을 현재 클러스터 버전의 기본 버전으로
 	done
 
 addon-restore: ## addon-snapshot 에 저장한 버전으로 애드온을 되돌림
-	@test -s $(ADDON_SNAPSHOT) || { echo "${RED}$(ADDON_SNAPSHOT) 이 없습니다. make addon-snapshot 을 먼저 실행하세요${NC}"; exit 1; }
+	@test -s $(ADDON_SNAPSHOT) || { echo "${YELLOW}$(ADDON_SNAPSHOT) 이 없어 애드온 복원을 건너뜁니다${NC}"; exit 0; }
 	@CN=$$(cd terraform && terraform output -raw cluster_name 2>/dev/null || echo "$(CLUSTER_NAME)"); \
 	while read -r A V; do \
 		[ -n "$$A" ] || continue; \
@@ -496,6 +499,7 @@ rollback-rest: session ## 중단된 롤백의 컨트롤 플레인부터 이어�
 _rollback-rest:
 	@$(MAKE) wait-nodegroup
 	@$(MAKE) insights
+	@$(MAKE) addon-restore
 	@$(MAKE) rollback-cluster VERSION=$(VERSION)
 	@$(MAKE) cluster-version
 	@$(MAKE) addons
@@ -509,6 +513,8 @@ rollback-a: session ## 패턴 A 롤백을 한 번에 (노드 그룹 → 컨트�
 _rollback-a:
 	@$(MAKE) insights
 	@$(MAKE) rollback-nodegroup VERSION=$(VERSION)
+	@$(MAKE) addon-restore
+	@$(MAKE) insights
 	@$(MAKE) rollback-cluster VERSION=$(VERSION)
 	@$(MAKE) cluster-version
 	@$(MAKE) addons
@@ -520,6 +526,8 @@ rollback-b: session ## 패턴 B 롤백을 한 번에 (컨트롤 플레인만). V
 	@$(MAKE) log T="_rollback-b VERSION=$(VERSION) AUTO_APPROVE=1" N=rollback-b MONITOR=1
 
 _rollback-b:
+	@$(MAKE) insights
+	@$(MAKE) addon-restore
 	@$(MAKE) insights
 	@$(MAKE) rollback-cluster VERSION=$(VERSION)
 	@$(MAKE) cluster-version
