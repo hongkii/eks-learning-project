@@ -4,15 +4,15 @@
 # 사용법:
 #   make setup     - 초기 설정 (tfvars 파일 생성)
 #   make plan      - Terraform 실행 계획 확인
-#   make deploy    - EKS 클러스터 배포
+#   make deploy-all - 배포부터 데모 앱까지 한 번에
 #   make kubeconfig - kubectl 설정
 #   make status    - 클러스터 상태 확인
 #   make destroy   - 리소스 삭제
 #   make clean     - 임시 파일 정리
 # =============================================================================
 
-.PHONY: help check-tools check-aws setup validate plan deploy kubeconfig status \
-        test-app app-status app-open app-watch clean-test-app destroy clean all \
+.PHONY: help check-tools check-aws setup validate plan deploy deploy-all kubeconfig status \
+        test-app app-status app-open app-watch clean-test-app destroy clean \
         cost-note versions cluster-version insights \
         rollback-nodegroup rollback-cluster updates drift
 
@@ -41,8 +41,8 @@ help: ## 사용 가능한 명령어 표시
 	@echo "${GREEN}배포 순서:${NC}"
 	@echo "  1. make setup      - 초기 설정"
 	@echo "  2. make plan       - 실행 계획 확인"
-	@echo "  3. make deploy     - 클러스터 배포 (확인 프롬프트 있음)"
-	@echo "  4. make status     - 상태 확인"
+	@echo "  3. make deploy-all - 배포 + 상태 확인 + 데모 앱까지 한 번에"
+	@echo "     make deploy     - 배포만 (확인 프롬프트 있음)"
 	@echo ""
 	@echo "${GREEN}버전 롤백 검증 순서:${NC}"
 	@echo "  1. make versions                        - 지원 버전 확인"
@@ -112,6 +112,15 @@ deploy: ## EKS 클러스터 배포 (약 15분 소요, 과금 시작)
 	@echo "${GREEN}✓ EKS 클러스터 배포가 완료되었습니다${NC}"
 	@$(MAKE) kubeconfig
 	@$(MAKE) cost-note
+
+deploy-all: setup ## 배포 + 상태 확인 + 버전 확인 + 데모 앱을 한 번에 (검증용)
+	@echo "${BLUE}=== 시작 $$(date '+%Y-%m-%d %H:%M:%S') ===${NC}"
+	@$(MAKE) deploy
+	@$(MAKE) status
+	@$(MAKE) cluster-version
+	@$(MAKE) test-app
+	@echo "${BLUE}=== 완료 $$(date '+%Y-%m-%d %H:%M:%S') ===${NC}"
+	@echo "${YELLOW}다음: tfvars 의 kubernetes_version 을 1.36 으로 바꾸고 make deploy${NC}"
 
 kubeconfig: ## kubectl 설정 업데이트
 	@echo "${BLUE}kubectl 설정을 업데이트합니다...${NC}"
@@ -213,6 +222,7 @@ insights: ## 롤백 가능 여부 인사이트 확인 (업그레이드 후 7일�
 
 rollback-nodegroup: ## 노드 그룹만 이전 버전으로 롤백 (VERSION=1.35 필요)
 	@test -n "$(VERSION)" || { echo "${RED}VERSION 을 지정하세요. 예: make rollback-nodegroup VERSION=1.35${NC}"; exit 1; }
+	@echo "${BLUE}=== 노드 그룹 롤백 시작 $$(date '+%Y-%m-%d %H:%M:%S') ===${NC}"
 	@CN=$$(cd terraform && terraform output -raw cluster_name 2>/dev/null || echo "$(CLUSTER_NAME)"); \
 	for NG in $$(aws eks list-nodegroups --cluster-name $$CN --query 'nodegroups[]' --output text); do \
 		echo "${BLUE}$$NG 를 $(VERSION) 으로 롤백${NC}"; \
@@ -225,6 +235,7 @@ rollback-cluster: ## 컨트롤 플레인을 이전 버전으로 롤백 (VERSION=
 	@echo "${RED}⚠️  컨트롤 플레인을 $(VERSION) 으로 롤백합니다. 노드 그룹을 먼저 롤백했는지 확인하세요.${NC}"
 	@printf "${YELLOW}계속하려면 yes 를 입력하세요: ${NC}"; \
 	read ans; [ "$$ans" = "yes" ] || { echo "${RED}중단했습니다${NC}"; exit 1; }
+	@echo "${BLUE}=== 컨트롤 플레인 롤백 시작 $$(date '+%Y-%m-%d %H:%M:%S') ===${NC}"
 	@CN=$$(cd terraform && terraform output -raw cluster_name 2>/dev/null || echo "$(CLUSTER_NAME)"); \
 	aws eks update-cluster-version --name $$CN --kubernetes-version $(VERSION)
 	@echo "${YELLOW}응답의 type 이 VersionRollback 이면 롤백으로 처리된 것입니다${NC}"
@@ -249,14 +260,6 @@ clean: ## 임시 파일 정리 (lock 파일은 재현성을 위해 유지)
 	@echo "${GREEN}✓ 임시 파일이 정리되었습니다${NC}"
 	@echo "${YELLOW}참고: .terraform.lock.hcl 은 provider 버전 고정용이라 삭제하지 않습니다${NC}"
 
-all: setup plan deploy status ## 전체 배포 프로세스 실행
-	@echo "${GREEN}✓ 전체 배포가 완료되었습니다${NC}"
-	@echo ""
-	@echo "${BLUE}다음 단계:${NC}"
-	@echo "  1. make status        - 클러스터 상태 확인"
-	@echo "  2. make test-app      - 테스트 앱 배포"
-	@echo "  3. kubectl get nodes  - 노드 확인"
-	@echo "  4. kubectl get svc    - 서비스 확인"
 
 # 기본 타겟
 .DEFAULT_GOAL := help

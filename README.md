@@ -40,11 +40,13 @@ If the profile requires MFA, the AWS CLI prompts for a code on the first call of
 ## Deploy
 
 ```bash
-make setup     # terraform init
-make plan      # review the execution plan
-make deploy    # deploy. Shows the plan and asks for a yes confirmation
-make status    # check nodes and system pods
+make plan        # review the execution plan
+make deploy-all  # deploy, then check status and versions and roll out the demo app
 ```
+
+`deploy-all` runs `setup`, `deploy`, `status`, `cluster-version` and `test-app` in order and
+prints a timestamp at both ends. `deploy` still asks for a `yes` confirmation before applying.
+Run the steps individually if you want to stop between them.
 
 Settings live in `terraform/terraform.tfvars`, which is gitignored.
 
