@@ -27,6 +27,12 @@ variable "kubernetes_version" {
   default     = "1.35"
 }
 
+variable "addon_most_recent" {
+  description = "True picks the newest addon version for kubernetes_version, false picks the default one"
+  type        = bool
+  default     = false
+}
+
 variable "node_group_kubernetes_version" {
   description = "Kubernetes version of the node group. Null follows kubernetes_version. Pin it to N-1 to keep a bake period after upgrading the control plane"
   type        = string

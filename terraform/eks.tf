@@ -59,18 +59,26 @@ resource "aws_cloudwatch_log_group" "eks_cluster" {
   }
 }
 
-# Addons are not rolled back automatically during a cluster version rollback.
+# Addon versions are resolved from kubernetes_version, so one apply moves the
+# cluster and the addons together. A rollback needs the addons brought down too.
 # https://docs.aws.amazon.com/eks/latest/userguide/rollback-cluster.html
-# Without addon_version the default version for the cluster version is installed.
+data "aws_eks_addon_version" "this" {
+  for_each = toset(["aws-ebs-csi-driver", "coredns", "kube-proxy", "vpc-cni"])
+
+  addon_name         = each.value
+  kubernetes_version = var.kubernetes_version
+  most_recent        = var.addon_most_recent
+}
 
 resource "aws_eks_addon" "ebs_csi_driver" {
-  cluster_name = aws_eks_cluster.main.name
-  addon_name   = "aws-ebs-csi-driver"
+  cluster_name  = aws_eks_cluster.main.name
+  addon_name    = "aws-ebs-csi-driver"
+  addon_version = data.aws_eks_addon_version.this["aws-ebs-csi-driver"].version
 
   service_account_role_arn = aws_iam_role.ebs_csi_driver.arn
 
   resolve_conflicts_on_create = "OVERWRITE"
-  resolve_conflicts_on_update = "PRESERVE"
+  resolve_conflicts_on_update = "OVERWRITE"
 
   depends_on = [
     aws_eks_cluster.main,
@@ -83,11 +91,12 @@ resource "aws_eks_addon" "ebs_csi_driver" {
 }
 
 resource "aws_eks_addon" "coredns" {
-  cluster_name = aws_eks_cluster.main.name
-  addon_name   = "coredns"
+  cluster_name  = aws_eks_cluster.main.name
+  addon_name    = "coredns"
+  addon_version = data.aws_eks_addon_version.this["coredns"].version
 
   resolve_conflicts_on_create = "OVERWRITE"
-  resolve_conflicts_on_update = "PRESERVE"
+  resolve_conflicts_on_update = "OVERWRITE"
 
   depends_on = [
     aws_eks_cluster.main,
@@ -100,16 +109,16 @@ resource "aws_eks_addon" "coredns" {
 }
 
 resource "aws_eks_addon" "kube_proxy" {
-  cluster_name = aws_eks_cluster.main.name
-  addon_name   = "kube-proxy"
+  cluster_name  = aws_eks_cluster.main.name
+  addon_name    = "kube-proxy"
+  addon_version = data.aws_eks_addon_version.this["kube-proxy"].version
 
   resolve_conflicts_on_create = "OVERWRITE"
-  resolve_conflicts_on_update = "PRESERVE"
+  resolve_conflicts_on_update = "OVERWRITE"
 
-  depends_on = [
-    aws_eks_cluster.main,
-    aws_eks_node_group.main
-  ]
+  # A DaemonSet needs no nodes, and installing it before the nodes join means they
+  # start with the right version.
+  depends_on = [aws_eks_cluster.main]
 
   tags = {
     Name = "${var.cluster_name}-kube-proxy-addon"
@@ -117,16 +126,16 @@ resource "aws_eks_addon" "kube_proxy" {
 }
 
 resource "aws_eks_addon" "vpc_cni" {
-  cluster_name = aws_eks_cluster.main.name
-  addon_name   = "vpc-cni"
+  cluster_name  = aws_eks_cluster.main.name
+  addon_name    = "vpc-cni"
+  addon_version = data.aws_eks_addon_version.this["vpc-cni"].version
 
   resolve_conflicts_on_create = "OVERWRITE"
-  resolve_conflicts_on_update = "PRESERVE"
+  resolve_conflicts_on_update = "OVERWRITE"
 
-  depends_on = [
-    aws_eks_cluster.main,
-    aws_eks_node_group.main
-  ]
+  # A DaemonSet needs no nodes, and installing it before the nodes join means they
+  # start with the right version.
+  depends_on = [aws_eks_cluster.main]
 
   tags = {
     Name = "${var.cluster_name}-vpc-cni-addon"
