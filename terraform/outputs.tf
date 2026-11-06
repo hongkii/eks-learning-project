@@ -73,11 +73,6 @@ output "node_security_group_id" {
   value       = aws_security_group.eks_nodes.id
 }
 
-output "alb_security_group_id" {
-  description = "Load balancer security group ID"
-  value       = aws_security_group.alb.id
-}
-
 output "cloudwatch_log_group_name" {
   description = "CloudWatch log group holding the control plane logs"
   value       = aws_cloudwatch_log_group.eks_cluster.name
