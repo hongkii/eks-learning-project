@@ -26,7 +26,7 @@ Spec baseline is the documentation as of November 2026, after Argo CD Notificati
 | IAM Identity Center | Account instance in this account, one user and one group. The capability supports account instances, and the instance cannot be changed after the capability is created. |
 | GitHub | New private repository for the application manifests, fine-grained PAT limited to that repository with Contents read-only. |
 | Slack | App with a bot token (`chat:write`) and a channel the bot is invited to. |
-| Secret values | The user stores the PAT and the Slack token in Secrets Manager. Terraform creates the secret containers only. |
+| Secret values | The user creates two Secrets Manager secrets with fixed names and stores the PAT and the Slack token. Terraform only reads their ARNs with data sources, so a destroy never schedules them for deletion. |
 | AWS session | MFA session through `make session`. |
 
 ## Architecture
@@ -37,7 +37,7 @@ providers from that cluster are kept apart, so one apply never both creates the 
 | Root | Owns | Providers |
 | --- | --- | --- |
 | `terraform/` (existing) | VPC, EKS, node group, add-ons | aws, tls |
-| `gitops/` (new) | Everything Argo CD: Helm release, capability, IAM, SQS, EventBridge, Secrets Manager containers, Kubernetes objects | aws, helm, kubernetes, alekc/kubectl |
+| `gitops/` (new) | Everything Argo CD: Helm release, capability, IAM, SQS, EventBridge, Kubernetes objects | aws, helm, kubernetes, alekc/kubectl |
 
 `gitops/` reads the cluster with `data "aws_eks_cluster"` and authenticates with `aws eks get-token`.
 `kubectl_manifest` (alekc/kubectl) is used for Argo CD custom resources because it plans without the
@@ -70,7 +70,6 @@ stage.
 | `helm_release` argo-cd (`argocd` namespace) | running | 0 replicas | 0 replicas, `argocd-cm` and notifications ConfigMap no longer rendered | removed |
 | IRSA role for the notifications controller | yes | yes | yes | removed |
 | SQS queue (SSE-SQS), EventBridge bus, rule, CloudWatch Logs target | yes | yes | yes | yes |
-| Secrets Manager containers (PAT, Slack token) | yes | yes | yes | yes |
 | Repository Secret | PAT value | PAT value | Secrets Manager reference | Secrets Manager reference |
 | `argocd-notifications-secret` | token value | token value | Secrets Manager ARN | Secrets Manager ARN |
 | Capability role and policy | - | - | yes | yes |
