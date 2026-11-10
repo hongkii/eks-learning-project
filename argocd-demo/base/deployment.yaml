@@ -1,0 +1,31 @@
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: demo
+  labels:
+    app: demo
+spec:
+  replicas: 1
+  selector:
+    matchLabels:
+      app: demo
+  template:
+    metadata:
+      labels:
+        app: demo
+      annotations:
+        # Replaced by env/manual through a replacements file outside its root.
+        demo-greeting: base
+    spec:
+      containers:
+        - name: nginx
+          image: public.ecr.aws/nginx/nginx:1.27-alpine
+          ports:
+            - containerPort: 80
+          envFrom:
+            - configMapRef:
+                name: greeting
+          resources:
+            requests:
+              cpu: 10m
+              memory: 32Mi

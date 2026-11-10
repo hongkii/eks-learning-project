@@ -28,7 +28,6 @@ resource "kubectl_manifest" "application" {
 
   depends_on = [
     helm_release.argocd,
-    kubernetes_secret_v1.repo,
     kubernetes_namespace_v1.apps,
   ]
 }

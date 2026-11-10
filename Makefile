@@ -21,7 +21,7 @@
         rollback-a _rollback-a rollback-b _rollback-b \
         updates drift \
         gitops-init gitops-plan _gitops-plan gitops-apply _gitops-apply gitops-destroy _gitops-destroy \
-        argocd-ui argocd-apps
+        argocd-ui argocd-password argocd-apps
 
 # 개인 설정은 Makefile.local 에 둔다. gitignore 대상이라 저장소에는 올라가지 않는다.
 # 예: AWS_PROFILE = my-profile
@@ -671,6 +671,9 @@ _gitops-destroy:
 
 argocd-ui: ## 자체 운영 Argo CD UI 를 https://localhost:8080 으로 연결 (브랜치 A)
 	@kubectl -n gitops port-forward svc/argo-cd-argocd-server 8080:443
+
+argocd-password: ## 자체 운영 Argo CD 로컬 계정의 비밀번호 표시 (브랜치 A)
+	@cd $(GITOPS_DIR) && terraform output -raw argocd_password; echo
 
 argocd-apps: ## Application 의 동기화·헬스 상태 확인
 	@kubectl -n gitops get applications.argoproj.io \

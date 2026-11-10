@@ -11,8 +11,9 @@ variable "cluster_name" {
 }
 
 variable "repo_url" {
-  description = "HTTPS URL of the private Git repository that holds the application manifests"
+  description = "Public Git repository that holds the application manifests"
   type        = string
+  default     = "https://github.com/hongkii/eks-learning-project.git"
 }
 
 variable "target_revision" {
@@ -21,14 +22,10 @@ variable "target_revision" {
   default     = "main"
 }
 
-variable "dex_github_client_id" {
-  description = "Client ID of the GitHub OAuth App that Dex uses"
+variable "argocd_user" {
+  description = "Local account of the self-managed Argo CD, mapped to role:admin"
   type        = string
-}
-
-variable "argocd_admin_emails" {
-  description = "E-mail addresses mapped to role:admin in the self-managed Argo CD"
-  type        = list(string)
+  default     = "hongkii"
 }
 
 variable "slack_channel_id" {
