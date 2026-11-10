@@ -1,0 +1,21 @@
+# Official migration step 2: scale the self-managed controllers to zero before the capability starts.
+# https://docs.aws.amazon.com/eks/latest/userguide/argocd-comparison.html
+controller:
+  replicas: 0
+server:
+  replicas: 0
+repoServer:
+  replicas: 0
+applicationSet:
+  replicas: 0
+
+# The chart has no replica setting for these.
+dex:
+  enabled: false
+notifications:
+  enabled: false
+
+configs:
+  cm:
+    # Terraform owns argocd-cm from here, with the label the capability reads.
+    create: false

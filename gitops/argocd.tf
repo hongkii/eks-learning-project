@@ -25,6 +25,7 @@ resource "helm_release" "argocd" {
         triggers  = local.notifications_triggers
       }
     }),
+    file("${path.module}/helm/scaled-down-values.yaml"),
   ]
 
   depends_on = [kubernetes_secret_v1.dex_github]
