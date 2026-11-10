@@ -1,0 +1,8 @@
+global:
+  logging:
+    format: json
+
+configs:
+  cm:
+    # The manual overlay reads a replacements file outside its kustomization root.
+    kustomize.buildOptions: --load-restrictor LoadRestrictionsNone
