@@ -20,15 +20,20 @@ resource "kubectl_manifest" "application" {
         path           = each.value.path
       }
       destination = {
-        server    = "https://kubernetes.default.svc"
+        name      = "in-cluster"
         namespace = each.value.namespace
       }
     }, each.value.sync_policy)
   })
 
+  # Deleted before the capability, so the finalizer runs while a controller is there.
   depends_on = [
     helm_release.argocd,
     kubernetes_secret_v1.repo,
+    kubernetes_secret_v1.in_cluster,
     kubernetes_namespace_v1.apps,
+    aws_eks_capability.argocd,
+    aws_eks_access_policy_association.argocd_edit,
+    kubernetes_cluster_role_binding_v1.argocd_read_all,
   ]
 }

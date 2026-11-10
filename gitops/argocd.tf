@@ -51,24 +51,19 @@ resource "kubernetes_secret_v1" "dex_github" {
   data_wo_revision = 1
 }
 
-ephemeral "aws_secretsmanager_secret_version" "github_repo" {
-  secret_id = local.secret_names.github_repo
-}
-
-# https://argo-cd.readthedocs.io/en/stable/operator-manual/declarative-setup/#repositories
+# The capability reads the credentials from Secrets Manager with its role, so the Secret holds only the ARN.
+# https://docs.aws.amazon.com/eks/latest/userguide/integration-secrets-manager.html
 resource "kubernetes_secret_v1" "repo" {
   metadata {
-    name      = "argocd-repo-demo"
+    name      = "argocd-repo-demo-secretsmanager"
     namespace = kubernetes_namespace_v1.argocd.metadata[0].name
     labels    = { "argocd.argoproj.io/secret-type" = "repository" }
   }
 
-  data_wo = {
-    type     = "git"
-    url      = var.repo_url
-    project  = "default"
-    username = jsondecode(ephemeral.aws_secretsmanager_secret_version.github_repo.secret_string).username
-    password = jsondecode(ephemeral.aws_secretsmanager_secret_version.github_repo.secret_string).password
+  data = {
+    type      = "git"
+    url       = var.repo_url
+    project   = "default"
+    secretArn = data.aws_secretsmanager_secret.github_repo.arn
   }
-  data_wo_revision = 1
 }
