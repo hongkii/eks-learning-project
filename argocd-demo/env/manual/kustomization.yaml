@@ -1,0 +1,13 @@
+apiVersion: kustomize.config.k8s.io/v1beta1
+kind: Kustomization
+namespace: demo-manual
+resources:
+  - ../../base
+configMapGenerator:
+  - name: greeting
+    behavior: merge
+    literals:
+      - message=hello from manual
+# A file outside this directory needs --load-restrictor LoadRestrictionsNone.
+replacements:
+  - path: ../../base/replacements/greeting.yaml

@@ -1,0 +1,10 @@
+source:
+  kind: ConfigMap
+  name: greeting
+  fieldPath: data.message
+targets:
+  - select:
+      kind: Deployment
+      name: demo
+    fieldPaths:
+      - spec.template.metadata.annotations.demo-greeting

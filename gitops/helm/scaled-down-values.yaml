@@ -9,9 +9,7 @@ repoServer:
 applicationSet:
   replicas: 0
 
-# The chart has no replica setting for these.
-dex:
-  enabled: false
+# The chart has no replica setting for the notifications controller.
 notifications:
   enabled: false
 

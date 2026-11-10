@@ -29,7 +29,6 @@ resource "kubectl_manifest" "application" {
   # Deleted before the capability, so the finalizer runs while a controller is there.
   depends_on = [
     helm_release.argocd,
-    kubernetes_secret_v1.repo,
     kubernetes_secret_v1.in_cluster,
     kubernetes_namespace_v1.apps,
     aws_eks_capability.argocd,
