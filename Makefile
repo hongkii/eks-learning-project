@@ -49,6 +49,10 @@ ifneq ($(strip $(AWS_PROFILE)),)
 export AWS_PROFILE
 endif
 
+# kubectl 과 update-kubeconfig 는 이 저장소 전용 kubeconfig 만 쓴다.
+# ~/.kube/config 의 current-context 가 다른 클러스터여도 그쪽에 명령이 가지 않는다.
+export KUBECONFIG := $(CURDIR)/.kubeconfig
+
 # AWS CLI v2 는 기본으로 출력을 pager 에 넣는다. 빈 값이면 pager 를 쓰지 않는다.
 # https://docs.aws.amazon.com/cli/latest/userguide/cli-usage-pagination.html
 export AWS_PAGER :=

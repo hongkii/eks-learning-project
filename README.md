@@ -76,6 +76,10 @@ stays plain text. `make log-merge` concatenates every log into one file in execu
 
 Settings live in `terraform/terraform.tfvars`, which is gitignored.
 
+Make targets use `.kubeconfig` in the repository, not `~/.kube/config`, so they never act on
+another cluster that happens to be the current context. Run `export KUBECONFIG=$PWD/.kubeconfig`
+to use plain `kubectl` against this cluster.
+
 ## Demo App
 
 Displays which node each pod runs on. Useful for observing behavior during node replacement or rollback.
