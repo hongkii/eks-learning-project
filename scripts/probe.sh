@@ -9,6 +9,9 @@
 
 set -uo pipefail
 
+# Same repository kubeconfig as the Makefile, so a direct run never reaches another cluster.
+export KUBECONFIG="$(cd "$(dirname "$0")/.." && pwd)/.kubeconfig"
+
 SVC="${SVC:-demo-app}"
 NS="${NS:-default}"
 INTERVAL="${INTERVAL:-1}"
