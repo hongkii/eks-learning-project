@@ -8,3 +8,8 @@ output "argocd_password" {
   value       = random_password.argocd_user.result
   sensitive   = true
 }
+
+output "argocd_capability_url" {
+  description = "Argo CD UI of the capability, signed in through IAM Identity Center"
+  value       = aws_eks_capability.argocd.configuration[0].argo_cd[0].server_url
+}

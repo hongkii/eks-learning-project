@@ -35,6 +35,7 @@ resource "helm_release" "argocd" {
         triggers  = local.notifications_triggers
       }
     }),
+    file("${path.module}/helm/scaled-down-values.yaml"),
   ]
 
   # Stored in argocd-secret. `make argocd-password` prints the password.

@@ -32,3 +32,13 @@ variable "slack_channel_id" {
   description = "Slack channel ID that receives the notifications"
   type        = string
 }
+
+variable "idc_user" {
+  description = "IAM Identity Center user that signs in to the Argo CD capability"
+  type = object({
+    user_name   = string
+    email       = string
+    given_name  = string
+    family_name = string
+  })
+}

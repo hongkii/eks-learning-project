@@ -3,3 +3,10 @@ slack_channel_id = "C0123456789"
 
 # Until the manifests are merged to main.
 target_revision = "feat/argocd-self-managed"
+
+idc_user = {
+  user_name   = "argocd-admin"
+  email       = "you@example.com"
+  given_name  = "Argo"
+  family_name = "Admin"
+}
