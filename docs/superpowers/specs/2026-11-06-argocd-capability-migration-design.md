@@ -1,153 +1,145 @@
 # Migrate self-managed Argo CD to the EKS Capability for Argo CD
 
-Date: 2026-11-06
-Status: approved design, implementation plan not written yet
+Date: 2026-11-06, revised 2026-11-10
+Status: approved design, implementation plan in `docs/superpowers/plans/`
 
 ## Goal
 
-Build a self-managed Argo CD on this cluster, migrate it to the Amazon EKS Capability for Argo CD,
-and record every step. The records are the only source for a blog post, so every claim in the post
-must come from a run in this repository or from the AWS documentation.
+Build a self-managed Argo CD on this cluster in the shape that is common in production, migrate it
+to the Amazon EKS Capability for Argo CD, and record every step. The records are the only source for
+a blog post, so every claim in the post must come from a run in this repository or from the AWS
+documentation.
 
 Spec baseline is the documentation as of November 2026, after Argo CD Notifications support
 (What's New, 2026-11-03).
 
+## Approach: two branches, two applies
+
+| Branch | Content |
+| --- | --- |
+| `feat/argocd-self-managed` (A) | The state before the migration. Argo CD from the Helm chart, managed by Terraform. |
+| `feat/argocd-capability` (B) | A plus the migration commits. |
+
+Deploy A, check it, then check out B and run `terraform apply` once. The diff from A to B is the
+migration change a team would review. Rollback is an apply of A.
+
+B keeps the Helm release, scaled to zero, so that one apply follows the official order
+(scale down first, then create the capability). Terraform can order the new resources after the Helm
+release only while the release is still in the configuration. Removing the release is the last
+commit on B (official step 10) and is applied after the checks.
+
 ## Non-goals
 
-- ALB, ACM, Route 53, AWS Load Balancer Controller and Dex SAML are not built. The UI of the
-  self-managed Argo CD is reached with `kubectl port-forward`. The post states that these parts were
-  not built and describes them from the documentation only.
+- ALB, ACM, Route 53 and the AWS Load Balancer Controller are not built. The self-managed UI is
+  reached with `kubectl port-forward` on `https://localhost:8080`.
 - Multi-cluster (hub and spoke) is out of scope.
 
 ## Prerequisites (manual, outside Terraform)
 
 | Item | Detail |
 | --- | --- |
-| IAM Identity Center | Account instance in this account, one user and one group. The capability supports account instances, and the instance cannot be changed after the capability is created. |
-| GitHub | New private repository for the application manifests, fine-grained PAT limited to that repository with Contents read-only. |
-| Slack | App with a bot token (`chat:write`) and a channel the bot is invited to. |
-| Secret values | The user creates two Secrets Manager secrets with fixed names and stores the PAT and the Slack token. Terraform only reads their ARNs with data sources, so a destroy never schedules them for deletion. |
-| AWS session | MFA session through `make session`. |
+| AWS session | Profile `cm-yim.hongki`. Every apply in this repository uses it. |
+| IAM Identity Center | Account instance in this account. There is no Terraform resource for the instance itself. Users and groups are managed by Terraform in B. |
+| GitHub repository | New private repository for the application manifests. Fine-grained PAT limited to it, Contents read-only. |
+| GitHub OAuth App | For Dex login with a GitHub account. Callback `https://localhost:8080/api/dex/callback`. |
+| Slack | App with a bot token (`chat:write`), invited to one channel. |
+| Secrets Manager | Created by hand, read by name: `argocd/github-repo` (`username`, `password`), `argocd/dex-github` (client secret, plain text), `argocd/slack-token` (bot token, plain text). |
 
-## Architecture
+Secret values never appear in Terraform state, plan output or the assistant's context. Terraform
+reads them with the ephemeral `aws_secretsmanager_secret_version` and writes them only to write-only
+arguments (`data_wo`). The Slack token is resolved by CloudFormation with a dynamic reference,
+because `aws_cloudwatch_event_connection` has no write-only argument.
 
-Two Terraform root modules. The cluster root and the root that configures the helm and kubernetes
-providers from that cluster are kept apart, so one apply never both creates the cluster and needs it.
+## Layout
 
 | Root | Owns | Providers |
 | --- | --- | --- |
 | `terraform/` (existing) | VPC, EKS, node group, add-ons | aws, tls |
-| `gitops/` (new) | Everything Argo CD: Helm release, capability, IAM, SQS, EventBridge, Kubernetes objects | aws, helm, kubernetes, alekc/kubectl |
+| `gitops/` (new) | Argo CD, notifications pipeline, capability, IAM Identity Center users | aws, helm, kubernetes, alekc/kubectl |
 
-`gitops/` reads the cluster with `data "aws_eks_cluster"` and authenticates with `aws eks get-token`.
-`kubectl_manifest` (alekc/kubectl) is used for Argo CD custom resources because it plans without the
-CRDs being present.
+`gitops/` reads the cluster with `data "aws_eks_cluster"` and authenticates with `aws eks get-token`
+through the provider `exec` block, so a long apply does not outlive a token.
 
 ### Changes to `terraform/`
 
-- `aws_eks_cluster.main`: add `access_config` with `authentication_mode = "API_AND_CONFIG_MAP"` and
-  `bootstrap_cluster_creator_admin_permissions = true`. The EKS API default is `CONFIG_MAP`, and access
-  entries need `API` or `API_AND_CONFIG_MAP`. The capability creates an access entry for its role.
-- `terraform.tfvars` during this work: `instance_types = ["t3.medium"]`, `capacity_type = "ON_DEMAND"`.
-  t3.small allows 11 pods per node, and system pods plus a self-managed Argo CD already use most of 22.
+- `access_config` with `authentication_mode = "API_AND_CONFIG_MAP"`. The EKS API default is
+  `CONFIG_MAP`, and the capability creates an access entry.
+- Local tfvars during this work: two `t3.medium` on-demand nodes. `t3.small` allows 11 pods per node.
 
-## Migration stages
+## A: self-managed Argo CD
 
-`gitops/` takes `var.stage`. Each stage is one `terraform apply`. Rollback is an apply of an earlier
-stage.
-
-| Stage | Official step | State |
-| --- | --- | --- |
-| `self-managed` | before | Helm Argo CD runs and syncs both Applications; notifications reach SQS and Slack |
-| `scaled-down` | 2 | Helm values set every Argo CD controller to 0 replicas |
-| `capability` | 3 to 9 | Capability created and Argo CD objects moved to the capability |
-| `decommissioned` | 10 | Helm release and IRSA role removed |
-
-### Resources per stage
-
-| Resource | self-managed | scaled-down | capability | decommissioned |
-| --- | --- | --- | --- | --- |
-| `helm_release` argo-cd (`argocd` namespace) | running | 0 replicas | 0 replicas, `argocd-cm` and notifications ConfigMap no longer rendered | removed |
-| IRSA role for the notifications controller | yes | yes | yes | removed |
-| SQS queue (SSE-SQS), EventBridge bus, rule, CloudWatch Logs target | yes | yes | yes | yes |
-| Repository Secret | PAT value | PAT value | Secrets Manager reference | Secrets Manager reference |
-| `argocd-notifications-secret` | token value | token value | Secrets Manager ARN | Secrets Manager ARN |
-| Capability role and policy | - | - | yes | yes |
-| `aws_eks_capability` (`type = "ARGOCD"`, `delete_propagation_policy = "RETAIN"`) | - | - | yes | yes |
-| Access policy association for the capability role | - | - | yes | yes |
-| Cluster Secret named `in-cluster` with the cluster ARN | - | - | yes | yes |
-| `argocd-cm` | Helm | Helm | Terraform, label `app.kubernetes.io/part-of: argocd` | Terraform |
-| `argocd-notifications-cm` | Helm | Helm | Terraform, label `eks.amazonaws.com/managed-notifications: "enabled"` | Terraform |
-| Capability log delivery (application and notification logs) | - | - | yes | yes |
-| Applications | `server: https://kubernetes.default.svc` | same | `name: in-cluster` | same |
-
-## Self-managed Argo CD (stage `self-managed`)
-
-- Chart `argo-cd`, latest version at implementation time, pinned. Dex disabled, local admin.
-- `argocd-cm`: `kustomize.buildOptions: --load-restrictor LoadRestrictionsNone`, one
-  `resource.customizations.ignoreDifferences` entry, `ui.bannercontent`.
-- Notifications: services `awssqs` (IRSA) and `slack`, own triggers and templates,
-  `TZ=Asia/Tokyo` on the controller, and one template that prints the same time twice:
-  `{{ (call .time.Parse .app.status.operationState.finishedAt).Local.Format "2006-01-02 15:04 MST" }}`
-  and `{{ dateInZone "2006-01-02 15:04 MST" (call .time.Parse .app.status.operationState.finishedAt) "Asia/Tokyo" }}`.
-- Applications from the private repository, both with `resources-finalizer.argocd.argoproj.io`:
+- Chart `argo-cd` 10.17.1 (Argo CD v3.6.1) in namespace `gitops`, release `argo-cd`.
+- Login through Dex with the GitHub connector. Local admin disabled. RBAC in `policy.csv` maps
+  e-mail addresses to `role:admin`, scopes `[groups, email]`, no default role. The client secret is a
+  Kubernetes Secret labelled `app.kubernetes.io/part-of: argocd` and referenced as
+  `$argocd-dex-github:clientSecret`.
+- `argocd-cm`: `kustomize.buildOptions: --load-restrictor LoadRestrictionsNone`. JSON logging.
+- Repository Secret with the PAT (`username`, `password`), project-scoped to `default`.
+- Applications as `kubectl_manifest`, project `default`, destination
+  `server: https://kubernetes.default.svc`, finalizer `resources-finalizer.argocd.argoproj.io`:
+  - `app-manual`: manual sync. Its overlay reads a `replacements` file outside the kustomization
+    root, so it needs `--load-restrictor LoadRestrictionsNone`.
   - `app-auto`: automated sync with prune.
-  - `app-manual`: manual sync, and its overlay loads a file outside the kustomization root through
-    `configMapGenerator`, so it needs `--load-restrictor LoadRestrictionsNone`.
+- Notifications: `awssqs` only, IRSA on the notifications controller, `TZ=Asia/Tokyo`, six custom
+  triggers and templates. Each message is a Slack Block Kit array and prints the finish time with
+  `.Local.Format` and with `dateInZone "Asia/Tokyo"`.
+- Delivery to Slack on the AWS side: SQS queue, EventBridge Pipe, custom event bus, rule, API
+  destination calling `chat.postMessage`. The connection and API destination are a CloudFormation
+  stack so that the token stays a dynamic reference.
 
-## Capability (stage `capability`)
+## B: migration commits
 
-- Capability role trusted by `capabilities.eks.amazonaws.com` with `sts:AssumeRole` and
-  `sts:TagSession`. Permissions: `sqs:GetQueueUrl`, `sqs:SendMessage`, `events:PutEvents`, and
-  `secretsmanager:GetSecretValue` on the two secrets.
-- `configuration.argo_cd`: `aws_idc` (account instance), namespace `argocd`, `rbac_role_mapping` with
-  the group as `ADMIN`.
-- The automatic access entry grants no rights to deploy applications. `AmazonEKSEditPolicy` is
-  associated to the application namespace; the namespace is created by Terraform.
-- Notifications add the `eventbridge` service sending to the custom bus.
-
-## Secret handling
-
-Secret values never appear in Terraform state, plan output, or the assistant's context.
-Candidate mechanism: ephemeral `aws_secretsmanager_secret_version` feeding write-only Secret data.
-The `aws-secrets-manager` skill is read before implementation and its rules win over this candidate.
+| Change | Official step |
+| --- | --- |
+| Helm values: controller, server, repo server and ApplicationSet at 0 replicas; Dex and the notifications controller disabled (the chart has no replica setting for them); `argocd-cm` no longer rendered | 2 |
+| Capability role (trust `capabilities.eks.amazonaws.com`, `sts:AssumeRole`, `sts:TagSession`) with SQS and Secrets Manager permissions | 3 |
+| IAM Identity Center user, group and membership | 3 |
+| `aws_eks_capability`: `ARGOCD`, namespace `gitops`, the account instance, group mapped to `ADMIN`, `RETAIN`. Depends on the Helm release. | 3 |
+| Access policy `AmazonEKSEditPolicy` for the application namespaces and a read-all ClusterRole bound to `eks-access-entry:<role ARN>` | 3 |
+| `argocd-cm` and `argocd-notifications-cm` owned by Terraform with the labels the capability reads. Depend on the Helm release. | 4 |
+| Repository Secret replaced by one with `secretArn` | 5 |
+| Cluster Secret `in-cluster` with the cluster ARN | 7 |
+| Applications use `destination.name: in-cluster` | 7, 8 |
+| Capability log delivery (application and notification logs) | - |
+| Last commit: Helm release, IRSA role and Dex Secret removed | 10 |
 
 ## Verification items
 
-Each item is captured under `logs/<date>/` with the commands and outputs.
+Each item is captured under `logs/<date>/` (git-ignored) with the commands and outputs.
 
-1. Error shown for `app-manual` after migration, because `--load-restrictor` is dropped.
-2. Notification time from `.Local.Format` and from `dateInZone "Asia/Tokyo"` on the capability.
-3. Argo CD version of the capability compared with the chart, and the CRDs after the capability is
-   created over CRDs installed by Helm.
-4. Takeover of deployed resources: tracking annotation change (`app:` to `argocd_app:`), sync status,
-   shared resource warnings, and whether prune deletes anything.
-5. Moving `argocd-cm` and `argocd-notifications-cm` from Helm to Terraform in the shared `argocd`
-   namespace, and what the capability reads at each point.
-6. A Terraform plan that replaces an Application, with the finalizer present (plan only unless
-   isolated with a throwaway Application).
-7. `awssqs` and `eventbridge` delivery with the capability role, Slack token resolved from
-   Secrets Manager.
-8. Rollback from `capability` to `self-managed`.
-9. Cost of each stage in ap-northeast-1.
+1. `app-manual` after the migration, because `--load-restrictor` is not a supported build option.
+2. Finish time in the Slack message: `.Local.Format` with `TZ` (A) and without it (B), and `dateInZone`.
+3. Argo CD version of the capability compared with the chart, and the Helm-installed CRDs after the
+   capability is created.
+4. Takeover of deployed resources: tracking annotation, sync status, and whether prune deletes
+   anything in `app-auto`.
+5. `argocd-cm` and `argocd-notifications-cm` moving from Helm to Terraform within one apply.
+6. Login: Dex with GitHub (A), IAM Identity Center (B), and the RBAC mapping in each.
+7. Repository access: PAT in a Secret (A), `secretArn` (B).
+8. `awssqs` delivery with the capability role, end to end to Slack.
+9. A plan that replaces an Application with the finalizer (plan only).
+10. Rollback from B to A.
+11. Cost of each phase in ap-northeast-1.
 
-## Cost (ap-northeast-1, approximate, to be rechecked against the price list before the run)
+## Cost (ap-northeast-1, approximate)
 
-EKS control plane, one NAT Gateway, two t3.medium on-demand nodes, capability $0.037486 per hour and
-$0.001853 per Application hour (price list published 2026-10-27), two Secrets Manager secrets.
+EKS control plane, one NAT Gateway, two t3.medium on-demand nodes, capability $0.037486 per hour
+and $0.001853 per Application hour (price list published 2026-10-27), three Secrets Manager secrets,
+SQS, EventBridge and CloudWatch Logs at test volume.
 
 ## Teardown
 
-`decommissioned` then `terraform destroy` in `gitops/` then `make destroy`. Applications are deleted
-before the capability so the finalizer is processed while a controller still runs.
+Apply the last commit of B, delete the Applications while the capability runs so the finalizer is
+processed, `terraform destroy` in `gitops/`, then `make destroy`.
 
 ## Open risks
 
-- The capability's Argo CD version is not documented. It may be lower than the chart.
-- Whether the capability runtime ships tzdata is not documented. `dateInZone` falls back to UTC
-  without an error.
+- The capability's Argo CD version is not documented and may be lower than v3.6.1.
 - Behaviour when the capability installs CRDs over Helm-installed CRDs is not documented.
-- An account instance of IAM Identity Center may be blocked by the organization.
+- Rollback to A removes Terraform-owned ConfigMaps and re-renders them in Helm in one apply. The
+  order is not guaranteed and a second apply may be needed.
+- AWS documents the automatic access entry permissions in two ways. The access policies are listed
+  after the run.
 
 ## References
 
@@ -156,7 +148,7 @@ before the capability so the finalizer is processed while a controller still run
 - https://docs.aws.amazon.com/eks/latest/userguide/argocd-configure-settings.html
 - https://docs.aws.amazon.com/eks/latest/userguide/argocd-notifications.html
 - https://docs.aws.amazon.com/eks/latest/userguide/argocd-register-clusters.html
-- https://docs.aws.amazon.com/eks/latest/userguide/capabilities-security.html
+- https://docs.aws.amazon.com/eks/latest/userguide/integration-secrets-manager.html
 - https://docs.aws.amazon.com/eks/latest/userguide/capability-role.html
-- https://docs.aws.amazon.com/eks/latest/userguide/setting-up-access-entries.html
+- https://docs.aws.amazon.com/singlesignon/latest/userguide/account-instances-identity-center.html
 - https://aws.amazon.com/about-aws/whats-new/2026/11/amazon-eks-argo-cd-notifications/
