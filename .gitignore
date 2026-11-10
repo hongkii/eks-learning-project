@@ -68,3 +68,6 @@ CLAUDE.md
 
 # 로컬 전용 Makefile 설정
 Makefile.local
+
+# Repository kubeconfig written by make kubeconfig
+.kubeconfig
