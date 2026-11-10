@@ -1,0 +1,14 @@
+[
+  {"type": "header", "text": {"type": "plain_text", "text": "${title}", "emoji": true}},
+  {"type": "section", "fields": [
+    {"type": "mrkdwn", "text": "*Application*\n{{ .app.metadata.name }}"},
+    {"type": "mrkdwn", "text": "*Sync*\n{{ .app.status.sync.status }}"},
+    {"type": "mrkdwn", "text": "*Health*\n{{ .app.status.health.status }}"},
+    {"type": "mrkdwn", "text": "*Revision*\n{{ .app.status.sync.revision | trunc 7 }}"}
+  ]},
+  {"type": "context", "elements": [
+    {"type": "mrkdwn", "text": "Finished (Local) {{ if and .app.status.operationState .app.status.operationState.finishedAt }}{{ (call .time.Parse .app.status.operationState.finishedAt).Local.Format "2006-01-02 15:04 MST" }}{{ end }}"},
+    {"type": "mrkdwn", "text": "Finished (dateInZone) {{ if and .app.status.operationState .app.status.operationState.finishedAt }}{{ dateInZone "2006-01-02 15:04 MST" (call .time.Parse .app.status.operationState.finishedAt) "Asia/Tokyo" }}{{ end }}"},
+    {"type": "mrkdwn", "text": "<{{ .context.argocdUrl }}/applications/{{ .app.metadata.namespace }}/{{ .app.metadata.name }}|Open in Argo CD>"}
+  ]}
+]

@@ -1,0 +1,27 @@
+AWSTemplateFormatVersion: "2010-09-09"
+Description: EventBridge connection and API destination for Slack chat.postMessage
+
+Resources:
+  Connection:
+    Type: AWS::Events::Connection
+    Properties:
+      Name: ${name}
+      AuthorizationType: API_KEY
+      AuthParameters:
+        ApiKeyAuthParameters:
+          ApiKeyName: Authorization
+          # https://docs.aws.amazon.com/AWSCloudFormation/latest/UserGuide/dynamic-references-secretsmanager.html
+          ApiKeyValue: "Bearer {{resolve:secretsmanager:${secret_name}}}"
+
+  ApiDestination:
+    Type: AWS::Events::ApiDestination
+    Properties:
+      Name: ${name}
+      ConnectionArn: !GetAtt Connection.Arn
+      InvocationEndpoint: https://slack.com/api/chat.postMessage
+      HttpMethod: POST
+      InvocationRateLimitPerSecond: 1
+
+Outputs:
+  ApiDestinationArn:
+    Value: !GetAtt ApiDestination.Arn
