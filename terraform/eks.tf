@@ -15,6 +15,13 @@ resource "aws_eks_cluster" "main" {
     security_group_ids = [aws_security_group.eks_cluster.id]
   }
 
+  # Access entries need API or API_AND_CONFIG_MAP. The EKS API default is CONFIG_MAP.
+  # https://docs.aws.amazon.com/eks/latest/userguide/setting-up-access-entries.html
+  access_config {
+    authentication_mode                         = "API_AND_CONFIG_MAP"
+    bootstrap_cluster_creator_admin_permissions = true
+  }
+
   # Enabling all log types increases CloudWatch ingestion cost.
   # https://docs.aws.amazon.com/eks/latest/userguide/control-plane-logs.html
   enabled_cluster_log_types = var.enabled_cluster_log_types
