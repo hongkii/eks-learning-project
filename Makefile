@@ -19,7 +19,9 @@
         rollback-nodegroup rollback-cluster wait-nodegroup rollback-rest _rollback-rest \
         _rollback-try-apply \
         rollback-a _rollback-a rollback-b _rollback-b \
-        updates drift
+        updates drift \
+        gitops-init gitops-plan _gitops-plan gitops-apply _gitops-apply gitops-destroy _gitops-destroy \
+        argocd-ui argocd-apps
 
 # 개인 설정은 Makefile.local 에 둔다. gitignore 대상이라 저장소에는 올라가지 않는다.
 # 예: AWS_PROFILE = my-profile
@@ -630,6 +632,49 @@ drift: ## 롤백 후 Terraform 과 실제 상태의 차이 확인
 		2) echo "${YELLOW}차이가 있습니다. kubernetes_version 을 실제 버전에 맞추세요${NC}" ;; \
 		*) echo "${RED}plan 이 실패했습니다 (exit=$$RC)${NC}"; exit $$RC ;; \
 	esac
+
+# --- Argo CD 이관 (gitops/) ---
+# 브랜치 A 는 Helm 자체 운영, 브랜치 B 는 Capability 로 이관한 상태다. 로그 이름에 브랜치를 붙인다.
+GITOPS_DIR = gitops
+BRANCH = $(shell git rev-parse --abbrev-ref HEAD | tr '/' '-')
+
+gitops-init: ## gitops/ 루트 초기화
+	@cd $(GITOPS_DIR) && terraform init
+
+gitops-plan: session ## 현재 브랜치의 gitops/ 실행 계획. logs/ 에 기록
+	@$(MAKE) log T="_gitops-plan" N=gitops-plan-$(BRANCH)
+
+_gitops-plan:
+	@echo "${BLUE}브랜치: $(BRANCH)${NC}"
+	@cd $(GITOPS_DIR) && terraform plan
+
+gitops-apply: session ## 현재 브랜치의 gitops/ 적용. logs/ 에 기록. AUTO_APPROVE=1 로 확인 생략
+	@$(MAKE) log T="_gitops-apply AUTO_APPROVE=$(AUTO_APPROVE)" N=gitops-apply-$(BRANCH)
+
+_gitops-apply:
+	@echo "${BLUE}=== gitops apply 시작 $$(date '+%Y-%m-%d %H:%M:%S') 브랜치 $(BRANCH) ===${NC}"
+	@cd $(GITOPS_DIR) && terraform plan -out=tfplan
+	@if [ "$(AUTO_APPROVE)" != "1" ]; then \
+		printf "${YELLOW}위 계획대로 적용합니다. 계속하려면 yes 를 입력하세요: ${NC}"; \
+		read ans; [ "$$ans" = "yes" ] || { echo "${RED}중단했습니다${NC}"; exit 1; }; \
+	fi
+	@cd $(GITOPS_DIR) && terraform apply tfplan
+	@rm -f $(GITOPS_DIR)/tfplan
+	@$(MAKE) --no-print-directory argocd-apps
+	@echo "${BLUE}=== gitops apply 완료 $$(date '+%Y-%m-%d %H:%M:%S') ===${NC}"
+
+gitops-destroy: session ## gitops/ 리소스 삭제. make destroy 전에 실행. logs/ 에 기록
+	@$(MAKE) log T="_gitops-destroy" N=gitops-destroy
+
+_gitops-destroy:
+	@cd $(GITOPS_DIR) && terraform destroy -auto-approve
+
+argocd-ui: ## 자체 운영 Argo CD UI 를 https://localhost:8080 으로 연결 (브랜치 A)
+	@kubectl -n gitops port-forward svc/argo-cd-argocd-server 8080:443
+
+argocd-apps: ## Application 의 동기화·헬스 상태 확인
+	@kubectl -n gitops get applications.argoproj.io \
+		-o custom-columns=NAME:.metadata.name,SYNC:.status.sync.status,HEALTH:.status.health.status,REVISION:.status.sync.revision,DESTINATION:.spec.destination
 
 clean: ## 임시 파일 정리 (lock 파일은 재현성을 위해 유지)
 	@echo "${BLUE}임시 파일을 정리합니다...${NC}"
