@@ -12,13 +12,16 @@
 # =============================================================================
 
 .PHONY: help check-tools check-aws setup validate plan deploy kubeconfig status \
-        deploy-all _deploy-all upgrade _upgrade session \
-        test-app app-status app-open app-watch monitor probe clean-test-app destroy clean log log-merge \
+        deploy-all _deploy-all upgrade _upgrade session destroy _destroy \
+        test-app app-status app-open app-watch monitor probe clean-test-app clean-eni clean log log-merge \
         cost-note versions cluster-version addons insights \
-        addon-snapshot addon-upgrade addon-restore \
+        addons-for addon-set rollback-try-apply \
         rollback-nodegroup rollback-cluster wait-nodegroup rollback-rest _rollback-rest \
+        _rollback-try-apply \
         rollback-a _rollback-a rollback-b _rollback-b \
-        updates drift
+        updates drift \
+        gitops-init gitops-plan _gitops-plan gitops-apply _gitops-apply gitops-destroy _gitops-destroy \
+        argocd-ui argocd-apps
 
 # 개인 설정은 Makefile.local 에 둔다. gitignore 대상이라 저장소에는 올라가지 않는다.
 # 예: AWS_PROFILE = my-profile
@@ -34,8 +37,6 @@ RUN_DATE ?= $(shell date +%Y%m%d)
 RUN_DIR = $(LOG_DIR)/$(RUN_DATE)
 # 실행할 때마다 덮어쓴다. 확장자가 .log 가 아니라서 합칠 대상에는 포함되지 않는다.
 MERGED = $(RUN_DIR)/merged.txt
-# 애드온을 올리기 전 버전을 적어두고, 롤백 전에 이 값으로 되돌린다.
-ADDON_SNAPSHOT = $(RUN_DIR)/addon-versions.txt
 
 # 1 이면 배포와 롤백의 yes 확인을 건너뛴다. 기본은 확인을 받는다.
 AUTO_APPROVE ?= 0
@@ -63,25 +64,30 @@ help: ## 사용 가능한 명령어 표시
 	@echo "${BLUE}EKS Terraform 자동화 도구${NC}"
 	@echo ""
 	@echo "${GREEN}사용 가능한 명령어:${NC}"
-	@grep -E '^[a-zA-Z_-]+:.*?## .*$$' $(MAKEFILE_LIST) | sort | awk 'BEGIN {FS = ":.*?## "}; {printf "  ${YELLOW}%-15s${NC} %s\n", $$1, $$2}'
+	@# -h: Makefile.local 을 include 하면 MAKEFILE_LIST 가 여러 개라 파일명이 붙는다
+	@grep -hE '^[a-zA-Z_-]+:.*?## .*$$' $(MAKEFILE_LIST) | sort | awk 'BEGIN {FS = ":.*?## "}; {printf "  ${YELLOW}%-20s${NC} %s\n", $$1, $$2}'
 	@echo ""
 	@echo "${GREEN}배포 순서:${NC}"
 	@echo "  1. make plan       - 실행 계획 확인"
 	@echo "  2. make deploy-all - 배포 + 상태 + 버전 + 애드온 + 데모 앱까지 한 번에"
 	@echo ""
-	@echo "${GREEN}버전 롤백 검증 순서 (패턴 A: 컨트롤 플레인과 노드를 함께 올림):${NC}"
-	@echo "  1. tfvars 의 kubernetes_version 을 1.36 으로 변경"
-	@echo "  2. make upgrade                - 업그레이드 + 버전 + 애드온 + 인사이트"
-	@echo "  3. make rollback-a VERSION=1.35 - 노드 그룹부터 되돌리고 drift 까지"
+	@echo "${GREEN}패턴 A (컨트롤 플레인과 노드를 함께 올림):${NC}"
+	@echo "  1. tfvars: kubernetes_version = \"1.36\""
+	@echo "  2. make upgrade                  - 1 apply 로 클러스터·노드·애드온 갱신"
+	@echo "  3. tfvars: kubernetes_version = \"1.35\" 로 되돌림"
+	@echo "  4. make rollback-try-apply       - apply 로는 안 되는 것을 확인 (선택)"
+	@echo "  5. make rollback-a VERSION=1.35  - 노드 -> 애드온 -> 컨트롤 플레인"
 	@echo ""
-	@echo "${GREEN}버전 롤백 검증 순서 (패턴 B: 컨트롤 플레인만 먼저):${NC}"
-	@echo "  1. tfvars 에 node_group_kubernetes_version = \"1.35\" 추가"
-	@echo "  2. make upgrade                - 컨트롤 플레인만 1.36 으로"
-	@echo "  3. make rollback-b VERSION=1.35 - 컨트롤 플레인만 되돌리고 drift 까지"
+	@echo "${GREEN}패턴 B (컨트롤 플레인만 먼저 올리고 bake):${NC}"
+	@echo "  1. tfvars: node_group_kubernetes_version = \"1.35\" 추가, kubernetes_version = \"1.36\""
+	@echo "  2. make upgrade                  - 컨트롤 플레인만"
+	@echo "  3. tfvars: kubernetes_version = \"1.35\" 로 되돌림"
+	@echo "  4. make rollback-b VERSION=1.35  - 애드온 -> 컨트롤 플레인"
 	@echo ""
-	@echo "${GREEN}애드온은 upgrade / rollback 에 포함되어 있습니다:${NC}"
-	@echo "  upgrade    클러스터 갱신 후 애드온도 기본 버전으로 올림"
-	@echo "  rollback   노드 그룹 -> 애드온 복원 -> 컨트롤 플레인 순으로 되돌림"
+	@echo "${GREEN}애드온:${NC}"
+	@echo "  업그레이드는 Terraform 이 kubernetes_version 에 맞춰 1 apply 로 처리합니다"
+	@echo "  롤백은 노드 그룹 -> 애드온 -> 컨트롤 플레인 순서가 강제되어 apply 로는 불가능합니다"
+	@echo "  make addons-for VERSION=1.35  - 해당 버전의 기본 애드온 버전 확인"
 	@echo ""
 	@echo "${GREEN}옵션:${NC}"
 	@echo "  make log T=insights        - 임의 타깃을 logs/ 에 기록하며 실행"
@@ -244,9 +250,7 @@ upgrade: session ## tfvars 변경 후 업그레이드. 모니터를 돌리며 lo
 
 _upgrade:
 	@echo "${BLUE}=== 업그레이드 시작 $$(date '+%Y-%m-%d %H:%M:%S') ===${NC}"
-	@$(MAKE) addon-snapshot
 	@$(MAKE) deploy
-	@$(MAKE) addon-upgrade
 	@$(MAKE) cluster-version
 	@$(MAKE) addons
 	@$(MAKE) insights
@@ -321,19 +325,61 @@ app-watch: ## 롤백 중 파드 상태를 실시간 관찰. 화면과 logs/ 에 
 clean-test-app: ## 데모 앱 삭제
 	@kubectl delete -f k8s-manifests/demo-app.yaml --ignore-not-found
 
-destroy: clean-test-app ## 모든 리소스 삭제
+destroy: session ## 모든 리소스 삭제. logs/ 에 기록
+	@$(MAKE) log T="_destroy" N=destroy
+
+clean-eni: ## VPC 에 남은 미사용 ENI 정리 (destroy 가 DependencyViolation 으로 막힐 때)
+	@# terraform output 은 state 가 비면 경고 문구를 내보내므로 형식으로 판정한다.
+	@VPC=$$(cd terraform && terraform output -raw vpc_id 2>/dev/null); \
+	case "$$VPC" in vpc-*) ;; *) VPC="" ;; esac; \
+	if [ -z "$$VPC" ]; then \
+		VPC=$$(aws ec2 describe-vpcs --filters Name=tag:Name,Values=$(CLUSTER_NAME)-vpc \
+			--query 'Vpcs[0].VpcId' --output text 2>/dev/null); \
+		case "$$VPC" in vpc-*) ;; *) VPC="" ;; esac; \
+	fi; \
+	[ -n "$$VPC" ] || { echo "${YELLOW}VPC 를 찾지 못해 건너뜁니다${NC}"; exit 0; }; \
+	echo "${BLUE}VPC $$VPC 의 미사용 ENI 를 확인합니다${NC}"; \
+	IDS=$$(aws ec2 describe-network-interfaces \
+		--filters Name=vpc-id,Values=$$VPC Name=status,Values=available \
+		--query 'NetworkInterfaces[].NetworkInterfaceId' --output text); \
+	if [ -z "$$IDS" ]; then \
+		echo "${GREEN}남은 ENI 없음${NC}"; \
+	else \
+		for E in $$IDS; do \
+			echo "${YELLOW}미사용 ENI 삭제: $$E${NC}"; \
+			aws ec2 delete-network-interface --network-interface-id $$E || true; \
+		done; \
+	fi
+
+_destroy:
 	@echo "${RED}모든 AWS 리소스를 삭제합니다${NC}"
-	@echo "${BLUE}LoadBalancer 서비스 확인 및 삭제 중...${NC}"
-	@kubectl get services --all-namespaces -o json | jq -r '.items[] | select(.spec.type=="LoadBalancer") | "\(.metadata.namespace) \(.metadata.name)"' | while read ns name; do kubectl delete service $$name -n $$ns 2>/dev/null || true; done
-	@echo "${BLUE}PersistentVolume 삭제 중...${NC}"
-	@kubectl delete pv --all 2>/dev/null || true
-	@echo "${BLUE}Terraform으로 인프라 삭제 중... (10-15분 소요)${NC}"
-	@cd terraform && terraform destroy --parallelism=30 -auto-approve
-	@echo "${BLUE}kubeconfig에서 클러스터 정보 정리 중...${NC}"
-	@echo "클러스터 이름: $(CLUSTER_NAME)"; \
-	kubectl config get-contexts -o name | grep $(CLUSTER_NAME) | xargs -r kubectl config delete-context 2>/dev/null || true; \
-	kubectl config get-clusters | grep $(CLUSTER_NAME) | awk '{print $$1}' | xargs -r kubectl config delete-cluster 2>/dev/null || true
-	@echo "${GREEN}✓ 모든 리소스가 삭제되었습니다${NC}"
+	@echo "${BLUE}=== 삭제 시작 $$(date '+%Y-%m-%d %H:%M:%S') ===${NC}"
+	@# 클러스터가 이미 없으면 kubectl 이 응답을 기다리며 멈추므로 타임아웃을 건다.
+	@echo "${BLUE}클러스터가 살아 있으면 LoadBalancer 와 PV 를 먼저 정리합니다${NC}"
+	@if kubectl --request-timeout=10s get --raw /version >/dev/null 2>&1; then \
+		kubectl --request-timeout=30s delete -f k8s-manifests/demo-app.yaml --ignore-not-found || true; \
+		kubectl --request-timeout=30s get services -A -o json 2>/dev/null \
+			| jq -r '.items[] | select(.spec.type=="LoadBalancer") | "\(.metadata.namespace) \(.metadata.name)"' \
+			| while read -r ns name; do kubectl --request-timeout=30s delete service "$$name" -n "$$ns" || true; done; \
+		kubectl --request-timeout=60s delete pv --all || true; \
+	else \
+		echo "${YELLOW}클러스터에 접속할 수 없어 건너뜁니다${NC}"; \
+	fi
+	@echo "${BLUE}Terraform 으로 인프라를 삭제합니다${NC}"
+	@# 삭제 순서는 의존 관계로 정해지므로 parallelism 을 올려도 EKS 쪽 대기 시간은 줄지 않는다.
+	@# VPC CNI 가 노드에 붙인 ENI 는 노드 그룹 삭제 후에 남으므로
+	@# 사전이 아니라 실패했을 때 정리하고 재시도한다.
+	@cd terraform && terraform destroy --parallelism=30 -auto-approve || { \
+		echo "${YELLOW}삭제가 실패했습니다. 남은 ENI 를 정리하고 다시 시도합니다${NC}"; \
+		$(MAKE) clean-eni; \
+		cd terraform && terraform destroy --parallelism=30 -auto-approve; \
+	}
+	@echo "${BLUE}kubeconfig 정리${NC}"
+	@CN="$(CLUSTER_NAME)"; \
+	kubectl config get-contexts -o name 2>/dev/null | grep -F "$$CN" | xargs -r -n1 kubectl config delete-context >/dev/null 2>&1 || true; \
+	kubectl config get-clusters 2>/dev/null | grep -F "$$CN" | xargs -r -n1 kubectl config delete-cluster >/dev/null 2>&1 || true
+	@echo "${BLUE}=== 삭제 완료 $$(date '+%Y-%m-%d %H:%M:%S') ===${NC}"
+	@echo "${YELLOW}KMS 키는 7일 대기 후 삭제됩니다. 그동안 과금이 이어집니다${NC}"
 
 # =============================================================================
 # 버전 롤백 검증용 타깃
@@ -376,47 +422,61 @@ cluster-version: ## 현재 클러스터와 노드 그룹의 버전 확인
 	echo "${BLUE}노드의 kubelet 버전${NC}"; \
 	kubectl get nodes -o custom-columns='NODE:.metadata.name,KUBELET:.status.nodeInfo.kubeletVersion,AMI:.status.nodeInfo.osImage' 2>/dev/null || true
 
-addons: ## 애드온 버전 확인 (롤백 시 애드온은 되돌아가지 않음을 확인)
+addons: ## 현재 설치된 애드온 버전 확인
 	@CN=$$(cd terraform && terraform output -raw cluster_name 2>/dev/null || echo "$(CLUSTER_NAME)"); \
 	for A in $$(aws eks list-addons --cluster-name $$CN --query 'addons[]' --output text); do \
 		aws eks describe-addon --cluster-name $$CN --addon-name $$A \
 			--query 'addon.{name:addonName,version:addonVersion,status:status}' --output table; \
 	done
 
-addon-snapshot: ## 현재 애드온 버전을 파일에 저장 (롤백용 기준값)
-	@mkdir -p $(RUN_DIR)
-	@CN=$$(cd terraform && terraform output -raw cluster_name 2>/dev/null || echo "$(CLUSTER_NAME)"); \
-	: > $(ADDON_SNAPSHOT); \
-	for A in $$(aws eks list-addons --cluster-name $$CN --query 'addons[]' --output text); do \
-		V=$$(aws eks describe-addon --cluster-name $$CN --addon-name $$A \
-			--query 'addon.addonVersion' --output text); \
-		echo "$$A $$V" >> $(ADDON_SNAPSHOT); \
-	done
-	@echo "${BLUE}저장한 애드온 버전:${NC}"
-	@sed 's|^|  |' $(ADDON_SNAPSHOT)
-
-addon-upgrade: ## 애드온을 현재 클러스터 버전의 기본 버전으로 올림
+addons-for: ## 지정 Kubernetes 버전의 애드온 기본 버전을 표시. VERSION 필요
+	@test -n "$(VERSION)" || { echo "${RED}VERSION 을 지정하세요. 예: make addons-for VERSION=1.35${NC}"; exit 1; }
 	@CN=$$(cd terraform && terraform output -raw cluster_name 2>/dev/null || echo "$(CLUSTER_NAME)"); \
 	for A in $$(aws eks list-addons --cluster-name $$CN --query 'addons[]' --output text); do \
-		echo "${BLUE}$$(date '+%H:%M:%S') $$A 을 기본 버전으로 갱신${NC}"; \
-		aws eks update-addon --cluster-name $$CN --addon-name $$A \
-			--resolve-conflicts OVERWRITE --query 'update.[id,status]' --output text || exit 1; \
-		aws eks wait addon-active --cluster-name $$CN --addon-name $$A || exit 1; \
-		aws eks describe-addon --cluster-name $$CN --addon-name $$A \
-			--query 'addon.[addonName,addonVersion,status]' --output text; \
+		V=$$(aws eks describe-addon-versions --addon-name $$A --kubernetes-version $(VERSION) \
+			--query 'addons[0].addonVersions[?compatibilities[?defaultVersion==`true`]].addonVersion|[0]' \
+			--output text); \
+		printf '  %-22s %s\n' "$$A" "$$V"; \
 	done
 
-addon-restore: ## addon-snapshot 에 저장한 버전으로 애드온을 되돌림
-	@test -s $(ADDON_SNAPSHOT) || { echo "${YELLOW}$(ADDON_SNAPSHOT) 이 없어 애드온 복원을 건너뜁니다${NC}"; exit 0; }
+addon-set: ## 애드온을 지정 Kubernetes 버전의 기본 버전으로 맞춤. VERSION 필요
+	@test -n "$(VERSION)" || { echo "${RED}VERSION 을 지정하세요. 예: make addon-set VERSION=1.35${NC}"; exit 1; }
 	@CN=$$(cd terraform && terraform output -raw cluster_name 2>/dev/null || echo "$(CLUSTER_NAME)"); \
-	while read -r A V; do \
-		[ -n "$$A" ] || continue; \
-		echo "${BLUE}$$(date '+%H:%M:%S') $$A 을 $$V 로 되돌림${NC}"; \
+	for A in $$(aws eks list-addons --cluster-name $$CN --query 'addons[]' --output text); do \
+		V=$$(aws eks describe-addon-versions --addon-name $$A --kubernetes-version $(VERSION) \
+			--query 'addons[0].addonVersions[?compatibilities[?defaultVersion==`true`]].addonVersion|[0]' \
+			--output text); \
+		[ -n "$$V" ] && [ "$$V" != "None" ] || { echo "${RED}$$A 의 $(VERSION) 기본 버전을 찾지 못했습니다${NC}"; exit 1; }; \
+		CUR=$$(aws eks describe-addon --cluster-name $$CN --addon-name $$A --query 'addon.addonVersion' --output text); \
+		if [ "$$CUR" = "$$V" ]; then \
+			echo "${BLUE}$$(date '+%H:%M:%S') $$A 은 이미 $$V${NC}"; \
+			continue; \
+		fi; \
+		echo "${BLUE}$$(date '+%H:%M:%S') $$A $$CUR -> $$V${NC}"; \
 		aws eks update-addon --cluster-name $$CN --addon-name $$A --addon-version $$V \
 			--resolve-conflicts OVERWRITE --query 'update.[id,status]' --output text || exit 1; \
 		aws eks wait addon-active --cluster-name $$CN --addon-name $$A || exit 1; \
-	done < $(ADDON_SNAPSHOT)
+	done
 	@$(MAKE) addons
+
+rollback-try-apply: session ## apply 한 번으로 롤백이 되는지 확인한다. 거부되는 것을 기록하는 용도
+	@$(MAKE) log T="_rollback-try-apply AUTO_APPROVE=$(AUTO_APPROVE)" N=rollback-try-apply
+
+_rollback-try-apply:
+	@echo "${YELLOW}tfvars 를 이전 버전으로 바꾼 상태에서 apply 를 시도합니다${NC}"
+	@echo "${YELLOW}Terraform 은 컨트롤 플레인부터 내리므로 kubelet skew 로 거부될 것으로 예상됩니다${NC}"
+	@if [ "$(AUTO_APPROVE)" = "1" ]; then \
+		echo "${BLUE}확인 없이 진행합니다 (AUTO_APPROVE=1)${NC}"; \
+	else \
+		printf "${YELLOW}계속하려면 yes 를 입력하세요: ${NC}"; \
+		read ans; [ "$$ans" = "yes" ] || { echo "${RED}중단했습니다${NC}"; exit 1; }; \
+	fi
+	@cd terraform && terraform apply -auto-approve; RC=$$?; \
+	if [ $$RC -eq 0 ]; then \
+		echo "${YELLOW}apply 가 성공했습니다. 예상과 다르므로 결과를 확인하세요${NC}"; \
+	else \
+		echo "${BLUE}apply 가 거부됐습니다 (exit=$$RC). 문서 순서대로 rollback-a 를 실행하세요${NC}"; \
+	fi
 
 insights: ## 업그레이드·롤백 인사이트 확인 (애드온 호환성 검사 포함)
 	@CN=$$(cd terraform && terraform output -raw cluster_name 2>/dev/null || echo "$(CLUSTER_NAME)"); \
@@ -445,8 +505,13 @@ rollback-nodegroup: ## 노드 그룹만 이전 버전으로 롤백 (VERSION=1.35
 				--query 'update.status' --output text 2>/dev/null); \
 			[ -n "$$ST" ] || { echo "${RED}상태를 조회하지 못했습니다. 중단합니다${NC}"; exit 1; }; \
 			echo "  $$(date '+%H:%M:%S') $$ST"; \
-			[ "$$ST" = "InProgress" ] || break; \
-			sleep 30; \
+			case $$ST in \
+				InProgress) sleep 30; continue ;; \
+				Successful) break ;; \
+				*) echo "${RED}노드 그룹 업데이트가 $$ST 입니다${NC}"; \
+				   aws eks describe-update --name $$CN --nodegroup-name $$NG --update-id $$UPD \
+				     --query 'update.errors' --output table; exit 1 ;; \
+			esac; \
 		done; \
 	done
 	@$(MAKE) wait-nodegroup
@@ -473,8 +538,13 @@ rollback-cluster: ## 컨트롤 플레인을 이전 버전으로 롤백 (VERSION=
 		ST=$$(aws eks describe-update --name $$CN --update-id $$UPD --query 'update.status' --output text 2>/dev/null); \
 		[ -n "$$ST" ] || { echo "${RED}상태를 조회하지 못했습니다. 중단합니다${NC}"; exit 1; }; \
 		echo "  $$(date '+%H:%M:%S') $$ST"; \
-		[ "$$ST" = "InProgress" ] || break; \
-		sleep 30; \
+		case $$ST in \
+			InProgress) sleep 30; continue ;; \
+			Successful) break ;; \
+			*) echo "${RED}컨트롤 플레인 롤백이 $$ST 입니다${NC}"; \
+			   aws eks describe-update --name $$CN --update-id $$UPD --query 'update.errors' --output table; \
+			   exit 1 ;; \
+		esac; \
 	done
 	@echo "${BLUE}=== 컨트롤 플레인 롤백 종료 $$(date '+%Y-%m-%d %H:%M:%S') ===${NC}"
 	@echo "${YELLOW}위 type 이 VersionRollback 이면 롤백으로 처리된 것입니다${NC}"
@@ -487,8 +557,11 @@ wait-nodegroup: ## 노드 그룹이 ACTIVE 가 될 때까지 대기
 				--query 'nodegroup.status' --output text 2>/dev/null); \
 			[ -n "$$ST" ] || { echo "${RED}상태를 조회하지 못했습니다. 중단합니다${NC}"; exit 1; }; \
 			echo "  $$(date '+%H:%M:%S') $$NG $$ST"; \
-			[ "$$ST" = "UPDATING" ] || [ "$$ST" = "CREATING" ] || break; \
-			sleep 30; \
+			case $$ST in \
+				UPDATING|CREATING) sleep 30; continue ;; \
+				ACTIVE) break ;; \
+				*) echo "${RED}노드 그룹이 $$ST 입니다. 중단합니다${NC}"; exit 1 ;; \
+			esac; \
 		done; \
 	done
 
@@ -499,21 +572,21 @@ rollback-rest: session ## 중단된 롤백의 컨트롤 플레인부터 이어�
 _rollback-rest:
 	@$(MAKE) wait-nodegroup
 	@$(MAKE) insights
-	@$(MAKE) addon-restore
+	@$(MAKE) addon-set VERSION=$(VERSION)
 	@$(MAKE) rollback-cluster VERSION=$(VERSION)
 	@$(MAKE) cluster-version
 	@$(MAKE) addons
 	@$(MAKE) updates
 	@$(MAKE) drift
 
-rollback-a: session ## 패턴 A 롤백을 한 번에 (노드 그룹 → 컨트롤 플레인). VERSION 필요
+rollback-a: session ## 패턴 A 롤백. 노드 그룹 -> 애드온 -> 컨트롤 플레인. VERSION 필요
 	@test -n "$(VERSION)" || { echo "${RED}VERSION 을 지정하세요. 예: make rollback-a VERSION=1.35${NC}"; exit 1; }
 	@$(MAKE) log T="_rollback-a VERSION=$(VERSION) AUTO_APPROVE=1" N=rollback-a MONITOR=1
 
 _rollback-a:
 	@$(MAKE) insights
 	@$(MAKE) rollback-nodegroup VERSION=$(VERSION)
-	@$(MAKE) addon-restore
+	@$(MAKE) addon-set VERSION=$(VERSION)
 	@$(MAKE) insights
 	@$(MAKE) rollback-cluster VERSION=$(VERSION)
 	@$(MAKE) cluster-version
@@ -521,13 +594,13 @@ _rollback-a:
 	@$(MAKE) updates
 	@$(MAKE) drift
 
-rollback-b: session ## 패턴 B 롤백을 한 번에 (컨트롤 플레인만). VERSION 필요
+rollback-b: session ## 패턴 B 롤백. 애드온 -> 컨트롤 플레인. VERSION 필요
 	@test -n "$(VERSION)" || { echo "${RED}VERSION 을 지정하세요. 예: make rollback-b VERSION=1.35${NC}"; exit 1; }
 	@$(MAKE) log T="_rollback-b VERSION=$(VERSION) AUTO_APPROVE=1" N=rollback-b MONITOR=1
 
 _rollback-b:
 	@$(MAKE) insights
-	@$(MAKE) addon-restore
+	@$(MAKE) addon-set VERSION=$(VERSION)
 	@$(MAKE) insights
 	@$(MAKE) rollback-cluster VERSION=$(VERSION)
 	@$(MAKE) cluster-version
@@ -535,17 +608,73 @@ _rollback-b:
 	@$(MAKE) updates
 	@$(MAKE) drift
 
-updates: ## 클러스터 업데이트 이력과 진행 상태 확인
+updates: ## 클러스터와 노드 그룹의 업데이트 이력 확인
 	@CN=$$(cd terraform && terraform output -raw cluster_name 2>/dev/null || echo "$(CLUSTER_NAME)"); \
+	echo "${BLUE}클러스터 업데이트 이력${NC}"; \
 	for ID in $$(aws eks list-updates --name $$CN --query 'updateIds[]' --output text); do \
 		aws eks describe-update --name $$CN --update-id $$ID \
-			--query 'update.{id:id,type:type,status:status,created:createdAt}' --output table; \
+			--query 'update.{type:type,status:status,created:createdAt}' --output text; \
+	done | sort -k3; \
+	echo "${BLUE}노드 그룹 업데이트 이력${NC}"; \
+	for NG in $$(aws eks list-nodegroups --cluster-name $$CN --query 'nodegroups[]' --output text); do \
+		for ID in $$(aws eks list-updates --name $$CN --nodegroup-name $$NG --query 'updateIds[]' --output text); do \
+			aws eks describe-update --name $$CN --nodegroup-name $$NG --update-id $$ID \
+				--query 'update.{type:type,status:status,created:createdAt}' --output text; \
+		done | sort -k3; \
 	done
 
 drift: ## 롤백 후 Terraform 과 실제 상태의 차이 확인
 	@echo "${BLUE}terraform plan 으로 drift 를 확인합니다${NC}"
-	@cd terraform && terraform plan -detailed-exitcode || \
-		echo "${YELLOW}차이가 있습니다. kubernetes_version 을 실제 버전에 맞추세요${NC}"
+	@# -detailed-exitcode: 0 차이 없음, 1 에러, 2 차이 있음
+	@cd terraform && terraform plan -detailed-exitcode; RC=$$?; \
+	case $$RC in \
+		0) echo "${GREEN}코드와 실제 상태가 일치합니다${NC}" ;; \
+		2) echo "${YELLOW}차이가 있습니다. kubernetes_version 을 실제 버전에 맞추세요${NC}" ;; \
+		*) echo "${RED}plan 이 실패했습니다 (exit=$$RC)${NC}"; exit $$RC ;; \
+	esac
+
+# --- Argo CD 이관 (gitops/) ---
+# 브랜치 A 는 Helm 자체 운영, 브랜치 B 는 Capability 로 이관한 상태다. 로그 이름에 브랜치를 붙인다.
+GITOPS_DIR = gitops
+BRANCH = $(shell git rev-parse --abbrev-ref HEAD | tr '/' '-')
+
+gitops-init: ## gitops/ 루트 초기화
+	@cd $(GITOPS_DIR) && terraform init
+
+gitops-plan: session ## 현재 브랜치의 gitops/ 실행 계획. logs/ 에 기록
+	@$(MAKE) log T="_gitops-plan" N=gitops-plan-$(BRANCH)
+
+_gitops-plan:
+	@echo "${BLUE}브랜치: $(BRANCH)${NC}"
+	@cd $(GITOPS_DIR) && terraform plan
+
+gitops-apply: session ## 현재 브랜치의 gitops/ 적용. logs/ 에 기록. AUTO_APPROVE=1 로 확인 생략
+	@$(MAKE) log T="_gitops-apply AUTO_APPROVE=$(AUTO_APPROVE)" N=gitops-apply-$(BRANCH)
+
+_gitops-apply:
+	@echo "${BLUE}=== gitops apply 시작 $$(date '+%Y-%m-%d %H:%M:%S') 브랜치 $(BRANCH) ===${NC}"
+	@cd $(GITOPS_DIR) && terraform plan -out=tfplan
+	@if [ "$(AUTO_APPROVE)" != "1" ]; then \
+		printf "${YELLOW}위 계획대로 적용합니다. 계속하려면 yes 를 입력하세요: ${NC}"; \
+		read ans; [ "$$ans" = "yes" ] || { echo "${RED}중단했습니다${NC}"; exit 1; }; \
+	fi
+	@cd $(GITOPS_DIR) && terraform apply tfplan
+	@rm -f $(GITOPS_DIR)/tfplan
+	@$(MAKE) --no-print-directory argocd-apps
+	@echo "${BLUE}=== gitops apply 완료 $$(date '+%Y-%m-%d %H:%M:%S') ===${NC}"
+
+gitops-destroy: session ## gitops/ 리소스 삭제. make destroy 전에 실행. logs/ 에 기록
+	@$(MAKE) log T="_gitops-destroy" N=gitops-destroy
+
+_gitops-destroy:
+	@cd $(GITOPS_DIR) && terraform destroy -auto-approve
+
+argocd-ui: ## 자체 운영 Argo CD UI 를 https://localhost:8080 으로 연결 (브랜치 A)
+	@kubectl -n gitops port-forward svc/argo-cd-argocd-server 8080:443
+
+argocd-apps: ## Application 의 동기화·헬스 상태 확인
+	@kubectl -n gitops get applications.argoproj.io \
+		-o custom-columns=NAME:.metadata.name,SYNC:.status.sync.status,HEALTH:.status.health.status,REVISION:.status.sync.revision,DESTINATION:.spec.destination
 
 clean: ## 임시 파일 정리 (lock 파일은 재현성을 위해 유지)
 	@echo "${BLUE}임시 파일을 정리합니다...${NC}"

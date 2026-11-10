@@ -23,9 +23,17 @@ zero_since=""
 
 while :; do
   # Ready addresses on the EndpointSlice are what kube-proxy actually forwards to.
-  ready="$(kubectl get endpointslice -n "${NS}" -l "kubernetes.io/service-name=${SVC}" \
-    -o jsonpath='{range .items[*].endpoints[*]}{.conditions.ready}{"\n"}{end}' 2>/dev/null \
-    | grep -c '^true$')"
+  # A kubectl failure must not be reported as an outage, so it is handled separately.
+  if ! out="$(kubectl get endpointslice -n "${NS}" -l "kubernetes.io/service-name=${SVC}" \
+    -o jsonpath='{range .items[*].endpoints[*]}{.conditions.ready}{"\n"}{end}' 2>/dev/null)"; then
+    if [ "${prev}" != "unreachable" ]; then
+      printf '[%s] API server unreachable, endpoint count unknown\n' "$(ts)"
+      prev="unreachable"
+    fi
+    sleep "${INTERVAL}"
+    continue
+  fi
+  ready="$(printf '%s\n' "${out}" | grep -c '^true$')"
   ready="${ready:-0}"
 
   now="$(ts)"
