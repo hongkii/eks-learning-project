@@ -39,16 +39,21 @@ commit on B (official step 10) and is applied after the checks.
 | Item | Detail |
 | --- | --- |
 | AWS session | Profile `cm-yim.hongki`. Every apply in this repository uses it. |
-| IAM Identity Center | Account instance in this account. There is no Terraform resource for the instance itself. Users and groups are managed by Terraform in B. |
-| GitHub repository | New private repository for the application manifests. Fine-grained PAT limited to it, Contents read-only. |
-| GitHub OAuth App | For Dex login with a GitHub account. Callback `https://localhost:8080/api/dex/callback`. |
+| IAM Identity Center | Account instance in this account, created with `aws sso-admin create-instance`. There is no Terraform resource for the instance itself. Users and groups are managed by Terraform in B. |
 | Slack | App with a bot token (`chat:write`), invited to one channel. |
-| Secrets Manager | Created by hand, read by name: `argocd/github-repo` (`username`, `password`), `argocd/dex-github` (client secret, plain text), `argocd/slack-token` (bot token, plain text). |
+| Secrets Manager | `argocd/slack-token` (bot token, plain text), created by hand. |
 
-Secret values never appear in Terraform state, plan output or the assistant's context. Terraform
-reads them with the ephemeral `aws_secretsmanager_secret_version` and writes them only to write-only
-arguments (`data_wo`). The Slack token is resolved by CloudFormation with a dynamic reference,
-because `aws_cloudwatch_event_connection` has no write-only argument.
+The account is a member of an AWS Organizations organization whose IAM Identity Center is not
+managed here. An account instance supports only OIDC-based customer managed applications, and SAML
+2.0 customer managed applications can be created only in the console, so Dex SAML with IAM Identity
+Center is not built. A falls back to a local account managed in Terraform.
+
+The application manifests are `argocd-demo/` in this public repository, so no repository
+credentials are needed.
+
+The Slack token never appears in Terraform state, plan output or the assistant's context. It is
+resolved by CloudFormation with a dynamic reference, because `aws_cloudwatch_event_connection` has no
+write-only argument.
 
 ## Layout
 
@@ -69,12 +74,10 @@ through the provider `exec` block, so a long apply does not outlive a token.
 ## A: self-managed Argo CD
 
 - Chart `argo-cd` 10.17.1 (Argo CD v3.6.1) in namespace `gitops`, release `argo-cd`.
-- Login through Dex with the GitHub connector. Local admin disabled. RBAC in `policy.csv` maps
-  e-mail addresses to `role:admin`, scopes `[groups, email]`, no default role. The client secret is a
-  Kubernetes Secret labelled `app.kubernetes.io/part-of: argocd` and referenced as
-  `$argocd-dex-github:clientSecret`.
+- Login with the local account `hongkii`. Dex and the built-in admin are disabled. `policy.csv` maps
+  the account to `role:admin`, no default role. The password is a `random_password`, its bcrypt hash
+  goes to `argocd-secret` through `set_sensitive`, and `make argocd-password` prints it.
 - `argocd-cm`: `kustomize.buildOptions: --load-restrictor LoadRestrictionsNone`. JSON logging.
-- Repository Secret with the PAT (`username`, `password`), project-scoped to `default`.
 - Applications as `kubectl_manifest`, project `default`, destination
   `server: https://kubernetes.default.svc`, finalizer `resources-finalizer.argocd.argoproj.io`:
   - `app-manual`: manual sync. Its overlay reads a `replacements` file outside the kustomization
@@ -91,17 +94,16 @@ through the provider `exec` block, so a long apply does not outlive a token.
 
 | Change | Official step |
 | --- | --- |
-| Helm values: controller, server, repo server and ApplicationSet at 0 replicas; Dex and the notifications controller disabled (the chart has no replica setting for them); `argocd-cm` no longer rendered | 2 |
+| Helm values: controller, server, repo server and ApplicationSet at 0 replicas; the notifications controller disabled (the chart has no replica setting for it); `argocd-cm` no longer rendered | 2 |
 | Capability role (trust `capabilities.eks.amazonaws.com`, `sts:AssumeRole`, `sts:TagSession`) with SQS and Secrets Manager permissions | 3 |
 | IAM Identity Center user, group and membership | 3 |
 | `aws_eks_capability`: `ARGOCD`, namespace `gitops`, the account instance, group mapped to `ADMIN`, `RETAIN`. Depends on the Helm release. | 3 |
 | Access policy `AmazonEKSEditPolicy` for the application namespaces and a read-all ClusterRole bound to `eks-access-entry:<role ARN>` | 3 |
 | `argocd-cm` and `argocd-notifications-cm` owned by Terraform with the labels the capability reads. Depend on the Helm release. | 4 |
-| Repository Secret replaced by one with `secretArn` | 5 |
 | Cluster Secret `in-cluster` with the cluster ARN | 7 |
 | Applications use `destination.name: in-cluster` | 7, 8 |
 | Capability log delivery (application and notification logs) | - |
-| Last commit: Helm release, IRSA role and Dex Secret removed | 10 |
+| Last commit: Helm release, IRSA role and local account password removed | 10 |
 
 ## Verification items
 
@@ -114,17 +116,16 @@ Each item is captured under `logs/<date>/` (git-ignored) with the commands and o
 4. Takeover of deployed resources: tracking annotation, sync status, and whether prune deletes
    anything in `app-auto`.
 5. `argocd-cm` and `argocd-notifications-cm` moving from Helm to Terraform within one apply.
-6. Login: Dex with GitHub (A), IAM Identity Center (B), and the RBAC mapping in each.
-7. Repository access: PAT in a Secret (A), `secretArn` (B).
-8. `awssqs` delivery with the capability role, end to end to Slack.
-9. A plan that replaces an Application with the finalizer (plan only).
-10. Rollback from B to A.
-11. Cost of each phase in ap-northeast-1.
+6. Login: local account (A), IAM Identity Center (B), and the RBAC mapping in each.
+7. `awssqs` delivery with the capability role, end to end to Slack.
+8. A plan that replaces an Application with the finalizer (plan only).
+9. Rollback from B to A.
+10. Cost of each phase in ap-northeast-1.
 
 ## Cost (ap-northeast-1, approximate)
 
 EKS control plane, one NAT Gateway, two t3.medium on-demand nodes, capability $0.037486 per hour
-and $0.001853 per Application hour (price list published 2026-10-27), three Secrets Manager secrets,
+and $0.001853 per Application hour (price list published 2026-10-27), one Secrets Manager secret,
 SQS, EventBridge and CloudWatch Logs at test volume.
 
 ## Teardown
