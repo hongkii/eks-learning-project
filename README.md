@@ -128,6 +128,41 @@ align `kubernetes_version` in the code with the actual version.
 
 - <https://github.com/hashicorp/terraform-provider-aws/issues/48751>
 
+## Argo CD Migration
+
+Migrates a self-managed Argo CD to the
+[EKS Capability for Argo CD](https://docs.aws.amazon.com/eks/latest/userguide/argocd-comparison.html).
+Everything lives in the `gitops/` root. Design:
+`docs/superpowers/specs/2026-11-06-argocd-capability-migration-design.md`.
+
+| Branch | State |
+| --- | --- |
+| `feat/argocd-self-managed` | Argo CD from the Helm chart, Dex login with GitHub, notifications through SQS and EventBridge to Slack |
+| `feat/argocd-capability` | The capability runs the same Applications. The Helm release stays at zero replicas until the last commit. |
+
+Create these by hand first:
+
+- IAM Identity Center account instance (used on `feat/argocd-capability`)
+- A private Git repository with the manifests and a fine-grained PAT for it (Contents read-only)
+- A GitHub OAuth App with the callback `https://localhost:8080/api/dex/callback`
+- A Slack app with `chat:write`, invited to the channel
+- Secrets Manager: `argocd/github-repo` (`{"username":"git","password":"<PAT>"}`),
+  `argocd/dex-github` and `argocd/slack-token` (plain text)
+
+```bash
+cp gitops/terraform.tfvars.example gitops/terraform.tfvars   # fill in
+make deploy-all                                              # cluster
+git switch feat/argocd-self-managed
+make gitops-init
+make gitops-apply                                            # before the migration
+make argocd-ui                                               # https://localhost:8080
+git switch feat/argocd-capability
+make gitops-apply                                            # migration
+```
+
+Rollback is `make gitops-apply` on `feat/argocd-self-managed`.
+Run `make gitops-destroy` before `make destroy`.
+
 ## Destroy
 
 ```bash
@@ -157,7 +192,11 @@ Roughly $0.16/h in total. Destroy the cluster once verification is done.
 | `terraform/eks.tf` | Cluster, KMS, CloudWatch logs, add-ons |
 | `terraform/node-group.tf` | Launch template, managed node group |
 | `terraform/iam.tf` | Cluster and node roles, IRSA, OIDC provider |
-| `terraform/security-groups.tf` | Cluster, node and ALB security groups |
+| `terraform/security-groups.tf` | Cluster and node security groups |
+| `gitops/argocd.tf` | Argo CD Helm release, Dex and repository Secrets |
+| `gitops/applications.tf` | Argo CD Applications |
+| `gitops/notifications.tf` | Notification triggers and templates, SQS queue, IRSA |
+| `gitops/slack.tf` | EventBridge Pipe, bus, rule and Slack API destination |
 | `k8s-manifests/demo-app.yaml` | Demo app (Deployment, Service, PDB) |
 | `k8s-manifests/` | EBS StorageClass and PVC examples |
 
